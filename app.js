@@ -1,0 +1,1327 @@
+/* Дневник — приложение для телефона: дела на день/неделю/месяц и зал.
+   Все записи лежат только в этом телефоне (IndexedDB); раздел «Копия»
+   сохраняет их в файл и восстанавливает из файла. */
+(() => {
+'use strict';
+
+/* ================= утилиты ================= */
+const $ = (s) => document.querySelector(s);
+const SCOPES = ['day', 'week', 'month'];
+const GYM_VIEWS = ['workout', 'program', 'progress', 'history'];
+const MONTHS_NOM = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+const MONTHS_PREP = ['январе', 'феврале', 'марте', 'апреле', 'мае', 'июне', 'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре'];
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const WD_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const WD_LONG = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+const DAYS = ['день', 'дня', 'дней'];
+const CHECK_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.6l3.2 3.1L13 4.6" fill="none" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function btn(cls, text, onClick) { const b = el('button', cls, text); b.type = 'button'; if (onClick) b.addEventListener('click', onClick); return b; }
+function data(node, attrs) { for (const k in attrs) node.dataset[k] = attrs[k]; return node; }
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+const pad = (n) => String(n).padStart(2, '0');
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+function plural(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
+
+/* ---------- даты ---------- */
+function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function today() { return startOfDay(new Date()); }
+function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+function dayNum(d) { return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5); }
+function mondayOf(d) { return addDays(d, -((d.getDay() + 6) % 7)); }
+function isoWeek(d) { const th = addDays(mondayOf(d), 3), y = th.getFullYear(); return { year: y, week: Math.floor((dayNum(th) - dayNum(new Date(y, 0, 1))) / 7) + 1 }; }
+function dayKey(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function weekKey(d) { const w = isoWeek(d); return w.year + '-W' + pad(w.week); }
+function monthKey(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1); }
+function keyFor(scope, d) { return scope === 'day' ? dayKey(d) : scope === 'week' ? weekKey(d) : monthKey(d); }
+function parseDay(k) { const p = k.split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); }
+function mondayFromWeekKey(k) { const p = k.split('-W').map(Number); return addDays(mondayOf(new Date(p[0], 0, 4)), (p[1] - 1) * 7); }
+function parseMonth(k) { const p = k.split('-').map(Number); return new Date(p[0], p[1] - 1, 1); }
+function dateOfKey(scope, k) { return scope === 'day' ? parseDay(k) : scope === 'week' ? mondayFromWeekKey(k) : parseMonth(k); }
+function normalize(scope, d) { return scope === 'day' ? startOfDay(d) : scope === 'week' ? mondayOf(d) : new Date(d.getFullYear(), d.getMonth(), 1); }
+function step(scope, d, n) {
+  if (scope === 'day') return addDays(d, n);
+  if (scope === 'week') return addDays(mondayOf(d), 7 * n);
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+function bounds(scope, a) {
+  if (scope === 'day') return [a, a];
+  if (scope === 'week') { const m = mondayOf(a); return [m, addDays(m, 6)]; }
+  return [new Date(a.getFullYear(), a.getMonth(), 1), new Date(a.getFullYear(), a.getMonth() + 1, 0)];
+}
+function rel(scope, d, t) {
+  if (scope === 'day') return dayNum(d) - dayNum(t);
+  if (scope === 'week') return Math.round((dayNum(mondayOf(d)) - dayNum(mondayOf(t))) / 7);
+  return (d.getFullYear() * 12 + d.getMonth()) - (t.getFullYear() * 12 + t.getMonth());
+}
+function fmtRange(mon, short) {
+  const sun = addDays(mon, 6), M = short ? MONTHS_SHORT : MONTHS_GEN;
+  if (mon.getMonth() === sun.getMonth()) return mon.getDate() + '–' + sun.getDate() + ' ' + M[sun.getMonth()];
+  return mon.getDate() + ' ' + M[mon.getMonth()] + ' – ' + sun.getDate() + ' ' + M[sun.getMonth()];
+}
+function leftText(n) { return n === 1 ? 'последний день' : 'осталось ' + n + ' ' + plural(n, DAYS); }
+function shortDate(k) { const d = parseDay(k); return WD_SHORT[d.getDay()] + ', ' + d.getDate() + ' ' + MONTHS_SHORT[d.getMonth()]; }
+function daysAgoText(ts) {
+  const n = dayNum(today()) - dayNum(startOfDay(new Date(ts)));
+  if (n <= 0) return 'сегодня';
+  if (n === 1) return 'вчера';
+  return n + ' ' + plural(n, DAYS) + ' назад';
+}
+
+/* ================= хранилище ================= */
+const IDB_NAME = 'dnevnik', IDB_STORE = 'kv';
+let idb = null, useLocal = false;
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(IDB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(IDB_STORE);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function idbGet(key) {
+  idb = idb || await idbOpen();
+  return new Promise((resolve, reject) => {
+    const q = idb.transaction(IDB_STORE).objectStore(IDB_STORE).get(key);
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+async function idbSet(key, val) {
+  idb = idb || await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+function emptyState() {
+  return {
+    version: 2,
+    tasks: {}, notes: {},
+    gym: { days: [], workouts: {}, active: null },
+    meta: { createdAt: Date.now(), lastBackup: 0 },
+  };
+}
+function normalizeState(v) {
+  const s = emptyState();
+  s.tasks = obj(v.tasks);
+  s.notes = obj(v.notes);
+  const g = obj(v.gym);
+  s.gym.days = Array.isArray(g.days) ? g.days.filter((d) => d && typeof d === 'object').map((d) => ({
+    id: String(d.id || newId()), name: String(d.name || 'Тренировка'),
+    exercises: Array.isArray(d.exercises) ? d.exercises.filter((e) => e && typeof e === 'object').map((e) => ({
+      id: String(e.id || newId()), name: String(e.name || ''), sets: String(e.sets ?? ''), reps: String(e.reps ?? ''),
+    })) : [],
+  })) : [];
+  s.gym.workouts = obj(g.workouts);
+  s.gym.active = g.active && typeof g.active === 'object' && Array.isArray(g.active.items) ? g.active : null;
+  s.meta = Object.assign(s.meta, obj(v.meta));
+  return s;
+}
+
+let S = emptyState();
+let saveTimer = null, saveChain = Promise.resolve(), persistAsked = false, saveFailed = false;
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 200); }
+function flush() {
+  clearTimeout(saveTimer); saveTimer = null;
+  const snapshot = JSON.parse(JSON.stringify(S));
+  saveChain = saveChain.then(async () => {
+    if (useLocal) localStorage.setItem('dnevnik.state', JSON.stringify(snapshot));
+    else await idbSet('state', snapshot);
+    saveFailed = false;
+  }).catch(() => {
+    if (!saveFailed) toast('Телефон не дал сохранить запись. Сохрани копию в разделе «Копия».');
+    saveFailed = true;
+  });
+  askPersist();
+  return saveChain;
+}
+function askPersist() {
+  if (persistAsked) return;
+  persistAsked = true;
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+}
+async function load() {
+  try {
+    const v = await idbGet('state');
+    if (v) S = normalizeState(v);
+  } catch (e) {
+    useLocal = true;
+    try { const t = localStorage.getItem('dnevnik.state'); if (t) S = normalizeState(JSON.parse(t)); } catch (e2) { /* пусто */ }
+  }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && saveTimer) flush(); });
+window.addEventListener('pagehide', () => { if (saveTimer) flush(); });
+
+/* ================= состояние экрана ================= */
+const ui = {
+  tab: 'diary', scope: 'day', anchor: today(), todayKey: dayKey(today()),
+  editing: null, gymView: 'workout', editDay: null, progressEx: null, progressMetric: 'w', openWorkout: null,
+};
+try {
+  const s = JSON.parse(localStorage.getItem('dnevnik.ui') || '{}');
+  if (['diary', 'gym', 'backup'].includes(s.tab)) ui.tab = s.tab;
+  if (SCOPES.includes(s.scope)) ui.scope = s.scope;
+  if (GYM_VIEWS.includes(s.gymView)) ui.gymView = s.gymView;
+} catch (e) { /* нет памяти */ }
+ui.anchor = normalize(ui.scope, today());
+function rememberUi() {
+  try { localStorage.setItem('dnevnik.ui', JSON.stringify({ tab: ui.tab, scope: ui.scope, gymView: ui.gymView })); } catch (e) { /* нет памяти */ }
+}
+
+/* ================= всплывашки и нижние листы ================= */
+let toastTimer = null;
+function hideToast() { $('#toast').hidden = true; clearTimeout(toastTimer); }
+function toast(msg, undo) {
+  const t = $('#toast');
+  t.replaceChildren(el('span', null, msg));
+  if (undo) t.append(btn('toast-undo', 'Вернуть', () => { hideToast(); undo(); }));
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, undo ? 6500 : 4000);
+}
+
+let sheetOnClose = null;
+function openSheet(title, build) {
+  const ov = $('#overlay'), panel = $('#sheetPanel');
+  panel.replaceChildren();
+  if (title) panel.append(el('p', 'sheet-title', title));
+  build(panel);
+  panel.append(btn('sheet-btn cancel', 'Отмена', closeSheet));
+  ov.hidden = false;
+}
+function closeSheet() {
+  $('#overlay').hidden = true;
+  const f = sheetOnClose; sheetOnClose = null;
+  if (f) f();
+}
+$('#overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeSheet(); });
+function sheetBtn(label, run, cls) { return btn('sheet-btn' + (cls ? ' ' + cls : ''), label, () => { closeSheet(); run(); }); }
+function confirmSheet(title, okLabel, danger) {
+  return new Promise((resolve) => {
+    openSheet(title, (p) => {
+      p.append(btn('sheet-btn ' + (danger ? 'danger' : 'ok'), okLabel, () => { resolve(true); closeSheet(); }));
+    });
+    sheetOnClose = () => resolve(false);
+  });
+}
+
+/* ================= ДНЕВНИК ================= */
+let tasks = [];
+const curKey = () => keyFor(ui.scope, ui.anchor);
+
+function validTask(t) { return t && typeof t.text === 'string' && SCOPES.includes(t.scope) && typeof t.period === 'string'; }
+function rebuild() {
+  tasks = Object.keys(S.tasks)
+    .map((id) => Object.assign({ id }, S.tasks[id]))
+    .filter(validTask)
+    .map((t) => Object.assign(t, { done: !!t.done, important: !!t.important }));
+}
+function sortTasks(list) {
+  return list.slice().sort((a, b) =>
+    (a.done - b.done) || ((b.important ? 1 : 0) - (a.important ? 1 : 0)) || ((a.createdAt || 0) - (b.createdAt || 0)));
+}
+
+function setTask(id, value) {
+  if (value) S.tasks[id] = value; else delete S.tasks[id];
+  save(); rebuild(); renderDiary();
+}
+function addTask(text) {
+  const now = Date.now();
+  setTask(newId(), { text, scope: ui.scope, period: curKey(), done: false, important: false, createdAt: now, updatedAt: now, doneAt: null });
+}
+function patch(t, fields) {
+  const cur = S.tasks[t.id];
+  if (cur) setTask(t.id, Object.assign({}, cur, fields, { updatedAt: Date.now() }));
+}
+function whereText(scope, key) {
+  const t = today();
+  if (scope === 'day') {
+    const d = parseDay(key), r = dayNum(d) - dayNum(t);
+    if (r === 0) return 'на сегодня';
+    if (r === 1) return 'на завтра';
+    return 'на ' + d.getDate() + ' ' + MONTHS_GEN[d.getMonth()];
+  }
+  if (scope === 'week') {
+    const mon = mondayFromWeekKey(key), r = rel('week', mon, t);
+    if (r === 0) return 'на эту неделю';
+    if (r === 1) return 'на следующую неделю';
+    return 'на неделю ' + fmtRange(mon);
+  }
+  const d = parseMonth(key);
+  return 'на ' + MONTHS_NOM[d.getMonth()] + (d.getFullYear() !== t.getFullYear() ? ' ' + d.getFullYear() : '');
+}
+function shortLabel(scope, key) {
+  const d = dateOfKey(scope, key);
+  if (scope === 'day') return shortDate(key);
+  if (scope === 'week') return fmtRange(d, true);
+  return MONTHS_NOM[d.getMonth()];
+}
+function move(t, scope, key, quiet) {
+  if (t.scope === scope && t.period === key) return;
+  const prev = { scope: t.scope, period: t.period };
+  patch(t, { scope, period: key });
+  if (!quiet) toast('Перенесено ' + whereText(scope, key), () => patch(t, prev));
+}
+function remove(t) {
+  const saved = S.tasks[t.id];
+  if (!saved) return;
+  setTask(t.id, null);
+  toast('Дело удалено', () => setTask(t.id, Object.assign({}, saved, { updatedAt: Date.now() })));
+}
+
+function taskSheet(t) {
+  openSheet(t.text, (p) => {
+    const td = today(), base = dateOfKey(t.scope, t.period), cur = keyFor(t.scope, td);
+    const nextKey = keyFor(t.scope, step(t.scope, base, 1));
+    const nextLabel = t.scope === 'day'
+      ? (nextKey === dayKey(addDays(td, 1)) ? 'На завтра' : 'На следующий день')
+      : t.scope === 'week' ? 'На следующую неделю' : 'На следующий месяц';
+    p.append(sheetBtn(nextLabel, () => move(t, t.scope, nextKey)));
+    if (t.period !== cur) p.append(sheetBtn({ day: 'На сегодня', week: 'На эту неделю', month: 'На этот месяц' }[t.scope], () => move(t, t.scope, cur)));
+    if (t.scope !== 'week') {
+      const wd = t.scope === 'day' ? base : (monthKey(td) === t.period ? td : base);
+      p.append(sheetBtn('В планы недели', () => move(t, 'week', weekKey(wd))));
+    }
+    if (t.scope !== 'month') p.append(sheetBtn('В планы месяца', () => move(t, 'month', monthKey(t.scope === 'week' ? addDays(base, 3) : base))));
+    const row = el('div', 'sheet-date');
+    const di = el('input');
+    di.type = 'date'; di.id = 'sheetDate';
+    di.value = t.scope === 'day' ? t.period : dayKey(td);
+    di.setAttribute('aria-label', 'Дата, на которую перенести');
+    row.append(di, btn(null, 'На дату', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(di.value)) { closeSheet(); move(t, 'day', di.value); } }));
+    p.append(row);
+    p.append(sheetBtn(t.important ? 'Снять «важно»' : 'Отметить важным', () => patch(t, { important: !t.important })));
+    p.append(sheetBtn('Изменить текст', () => {
+      const span = document.querySelector('[data-id="' + CSS.escape(t.id) + '"] .text');
+      if (span) startEdit(t, span);
+    }));
+    p.append(sheetBtn('Удалить', () => remove(t), 'danger'));
+  });
+}
+
+function startEdit(t, span) {
+  ui.editing = t.id;
+  const input = el('input', 'edit');
+  input.type = 'text'; input.maxLength = 500; input.value = t.text; input.id = 'edit-' + t.id;
+  input.setAttribute('enterkeyhint', 'done');
+  input.setAttribute('aria-label', 'Текст дела');
+  let finished = false;
+  const finish = (keep) => {
+    if (finished) return; finished = true;
+    ui.editing = null;
+    const v = input.value.trim();
+    if (keep && !v) remove(t);
+    else if (keep && v !== t.text) patch(t, { text: v });
+    else renderDiary();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  span.replaceWith(input);
+  input.focus();
+}
+
+function taskEl(t, ctx) {
+  const li = el('li', 'task' + (t.done ? ' done' : '') + (t.important ? ' important' : ''));
+  li.dataset.id = t.id;
+  const mark = btn('mark', '!', () => patch(t, { important: !t.important }));
+  mark.setAttribute('aria-label', 'Важное');
+  mark.setAttribute('aria-pressed', String(t.important));
+  const check = btn('check', null, () => patch(t, { done: !t.done, doneAt: t.done ? null : Date.now() }));
+  check.setAttribute('role', 'checkbox');
+  check.setAttribute('aria-checked', String(t.done));
+  check.setAttribute('aria-label', t.text);
+  check.innerHTML = CHECK_SVG;
+  const body = el('div', 'tbody');
+  const text = el('span', 'text', t.text);
+  text.addEventListener('click', () => startEdit(t, text));
+  body.append(text);
+  if (ctx.from) body.append(el('span', 'from', ctx.from));
+  const side = el('div', 'side');
+  if (ctx.quick) side.append(btn('quickbtn', ctx.quick.label, ctx.quick.run));
+  const more = btn('more', '⋯', () => taskSheet(t));
+  more.setAttribute('aria-label', 'Действия с делом');
+  side.append(more);
+  li.append(mark, check, body, side);
+  return li;
+}
+
+function blockHead(title, count, extra) {
+  const h = el('div', 'block-h');
+  const h3 = el('h3', null, title);
+  if (count != null) { h3.append(' '); h3.append(el('span', 'count', String(count))); }
+  h.append(h3);
+  if (extra) h.append(extra);
+  return h;
+}
+
+function periodText() {
+  const t = today(), d = ui.anchor, r = rel(ui.scope, d, t);
+  const yr = d.getFullYear() !== t.getFullYear() ? ' ' + d.getFullYear() : '';
+  if (ui.scope === 'day') {
+    const names = { '-2': 'Позавчера', '-1': 'Вчера', '0': 'Сегодня', '1': 'Завтра', '2': 'Послезавтра' };
+    const title = names[String(r)] || cap(WD_LONG[d.getDay()]);
+    let sub = (names[String(r)] ? WD_SHORT[d.getDay()] + ', ' : '') + d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + yr;
+    if (r > 2) sub += ' · через ' + r + ' ' + plural(r, DAYS);
+    if (r < -2) sub += ' · ' + (-r) + ' ' + plural(-r, DAYS) + ' назад';
+    const ph = r === 0 ? 'Что сделать сегодня?' : r === 1 ? 'Что сделать завтра?' : 'Что сделать ' + d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + '?';
+    return { title, sub, ph };
+  }
+  if (ui.scope === 'week') {
+    const names = { '-1': 'Прошлая неделя', '0': 'Эта неделя', '1': 'Следующая неделя' };
+    const title = names[String(r)] || 'Неделя ' + isoWeek(d).week;
+    let sub = fmtRange(d) + yr;
+    if (r === 0) sub += ' · ' + leftText(7 - ((t.getDay() + 6) % 7));
+    const ph = r === 0 ? 'Что сделать на этой неделе?' : r === 1 ? 'Что сделать на следующей неделе?' : 'Что сделать за неделю ' + fmtRange(d) + '?';
+    return { title, sub, ph };
+  }
+  const title = cap(MONTHS_NOM[d.getMonth()]) + yr;
+  const names = { '-1': 'прошлый месяц', '0': 'этот месяц', '1': 'следующий месяц' };
+  let sub = names[String(r)] || String(d.getFullYear());
+  if (r === 0) sub += ' · ' + leftText(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate() - t.getDate() + 1);
+  return { title, sub, ph: 'Что сделать в ' + MONTHS_PREP[d.getMonth()] + '?' };
+}
+
+function renderTop() {
+  const t = today();
+  $('#todayLine').textContent = cap(WD_LONG[t.getDay()]) + ', ' + t.getDate() + ' ' + MONTHS_GEN[t.getMonth()];
+}
+function renderScopes() {
+  const t = today();
+  document.querySelectorAll('.scope').forEach((b) => {
+    const s = b.dataset.scope, k = keyFor(s, t);
+    b.setAttribute('aria-selected', String(s === ui.scope));
+    const n = tasks.filter((x) => x.scope === s && x.period === k && !x.done).length;
+    const badge = b.querySelector('.badge');
+    badge.hidden = !n;
+    badge.textContent = String(n);
+  });
+}
+function renderPeriod() {
+  const p = periodText();
+  $('#pTitle').textContent = p.title;
+  $('#pSub').textContent = p.sub;
+  $('#addInput').placeholder = p.ph;
+  const r = rel(ui.scope, ui.anchor, today());
+  const chips = { day: [['Сегодня', 0], ['Завтра', 1]], week: [['Эта неделя', 0], ['Следующая', 1]], month: [['Этот месяц', 0], ['Следующий', 1]] }[ui.scope];
+  $('#quick').replaceChildren(...chips.map(([label, n]) => {
+    const c = btn('chip', label, () => goRel(n));
+    c.setAttribute('aria-pressed', String(r === n));
+    return c;
+  }));
+  const labels = { day: ['Предыдущий день', 'Следующий день'], week: ['Предыдущая неделя', 'Следующая неделя'], month: ['Предыдущий месяц', 'Следующий месяц'] }[ui.scope];
+  $('#prevBtn').setAttribute('aria-label', labels[0]);
+  $('#nextBtn').setAttribute('aria-label', labels[1]);
+}
+function renderProgress(items) {
+  const box = $('#progress');
+  const total = items.length, n = items.filter((t) => t.done).length;
+  if (!total) { box.replaceChildren(); box.hidden = true; return; }
+  box.hidden = false;
+  let vis;
+  if (total <= 20) {
+    vis = el('div', 'cells');
+    for (let i = 0; i < total; i++) vis.append(el('i', 'cell' + (i < n ? ' on' : '')));
+  } else {
+    vis = el('div', 'bar');
+    const fill = el('i'); fill.style.width = Math.round(100 * n / total) + '%'; vis.append(fill);
+  }
+  vis.setAttribute('aria-hidden', 'true');
+  box.replaceChildren(vis, el('span', 'ptext' + (n === total ? ' all' : ''), n === total ? 'Всё сделано: ' + n + ' из ' + total : 'Сделано ' + n + ' из ' + total));
+}
+function renderTails() {
+  const box = $('#tails'), scope = ui.scope, cur = keyFor(scope, today());
+  if (curKey() !== cur) { box.hidden = true; return; }
+  const tails = tasks
+    .filter((x) => x.scope === scope && !x.done && x.period < cur)
+    .sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : (a.createdAt || 0) - (b.createdAt || 0)));
+  if (!tails.length) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const title = { day: 'Не сделано в прошлые дни', week: 'Не сделано на прошлых неделях', month: 'Не сделано в прошлые месяцы' }[scope];
+  const allLabel = { day: 'Всё на сегодня', week: 'Всё на неделю', month: 'Всё на месяц' }[scope];
+  const quickLabel = { day: '→ сегодня', week: '→ неделя', month: '→ месяц' }[scope];
+  const all = btn('quickbtn', allLabel, () => {
+    tails.forEach((t) => move(t, scope, cur, true));
+    toast('Перенесено ' + whereText(scope, cur) + ': ' + tails.length);
+  });
+  const ul = el('ul', 'tasks');
+  tails.forEach((t) => ul.append(taskEl(t, { from: shortLabel(scope, t.period), quick: { label: quickLabel, run: () => move(t, scope, cur) } })));
+  box.replaceChildren(blockHead(title, tails.length, all), ul);
+}
+function renderUpper() {
+  const box = $('#upper');
+  if (ui.scope === 'month') { box.hidden = true; box.replaceChildren(); return; }
+  const up = ui.scope === 'day' ? 'week' : 'month';
+  const upKey = up === 'week' ? weekKey(ui.anchor) : monthKey(addDays(ui.anchor, 3));
+  const items = sortTasks(tasks.filter((t) => t.scope === up && t.period === upKey && !t.done));
+  if (!items.length) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  let label;
+  if (ui.scope === 'day') {
+    const r = rel('day', ui.anchor, today());
+    label = r === 0 ? '→ сегодня' : r === 1 ? '→ завтра' : '→ сюда';
+  } else label = '→ неделя';
+  const ul = el('ul', 'tasks');
+  items.forEach((t) => ul.append(taskEl(t, { quick: { label, run: () => move(t, ui.scope, curKey()) } })));
+  box.replaceChildren(blockHead(up === 'week' ? 'Из планов недели' : 'Из планов месяца', items.length), ul);
+}
+function weekDaysEl() {
+  const tKey = dayKey(today()), box = el('div', 'days');
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(ui.anchor, i), k = dayKey(date);
+    const items = sortTasks(tasks.filter((t) => t.scope === 'day' && t.period === k));
+    const open = items.filter((t) => !t.done);
+    const row = btn('dayrow' + (k === tKey ? ' today' : '') + (i > 4 ? ' we' : ''), null, () => setScope('day', date));
+    const name = el('span', 'dname');
+    name.append(el('b', null, WD_SHORT[date.getDay()]), ' ', el('span', 'dnum', String(date.getDate())));
+    const list = el('span', 'ditems');
+    if (!items.length) { list.textContent = 'пусто'; list.classList.add('none'); }
+    else if (!open.length) { list.textContent = 'всё сделано'; list.classList.add('ok'); }
+    else list.textContent = open.map((t) => t.text).join(' · ');
+    row.append(name, list, el('span', 'dcount', items.length ? (items.length - open.length) + '/' + items.length : ''));
+    box.append(row);
+  }
+  return box;
+}
+function calendarEl() {
+  const first = ui.anchor, y = first.getFullYear(), m = first.getMonth();
+  const days = new Date(y, m + 1, 0).getDate(), lead = (first.getDay() + 6) % 7, tKey = dayKey(today());
+  const grid = el('div', 'cal');
+  ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].forEach((w, i) => grid.append(el('div', 'cal-h' + (i > 4 ? ' we' : ''), w)));
+  for (let i = 0; i < lead; i++) grid.append(el('div'));
+  const gymDays = new Set(finishedWorkouts().map((w) => w.date));
+  for (let d = 1; d <= days; d++) {
+    const date = new Date(y, m, d), k = dayKey(date);
+    const items = sortTasks(tasks.filter((t) => t.scope === 'day' && t.period === k));
+    const cls = 'cal-d' + (k === tKey ? ' today' : '') + (k < tKey ? ' past' : '') + ((date.getDay() + 6) % 7 > 4 ? ' we' : '') + (gymDays.has(k) ? ' gym' : '');
+    const b = btn(cls, null, () => setScope('day', date));
+    b.append(el('span', 'num', String(d)));
+    if (items.length) {
+      const dots = el('span', 'dots');
+      items.slice(0, 4).forEach((t) => dots.append(el('i', 'dot' + (t.done ? ' ok' : k < tKey ? ' miss' : ''))));
+      if (items.length > 4) dots.append(el('span', 'more-n', '+' + (items.length - 4)));
+      b.append(dots);
+    }
+    const doneN = items.filter((t) => t.done).length;
+    b.setAttribute('aria-label', d + ' ' + MONTHS_GEN[m] + ': ' + (items.length ? 'сделано ' + doneN + ' из ' + items.length : 'дел нет') + (gymDays.has(k) ? ', была тренировка' : ''));
+    grid.append(b);
+  }
+  return grid;
+}
+function renderExtra() {
+  const box = $('#extra');
+  if (ui.scope === 'day') { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  if (ui.scope === 'week') box.replaceChildren(blockHead('По дням'), weekDaysEl());
+  else box.replaceChildren(blockHead('Дни ' + MONTHS_GEN[ui.anchor.getMonth()]), calendarEl(),
+    el('p', 'legend', 'Точки — дела: синяя запланировано, зелёная сделано, красная пропущено. Полоска в углу — была тренировка.'));
+}
+function renderNudge() {
+  const box = $('#backupNudge');
+  const has = Object.keys(S.tasks).length + Object.keys(S.gym.workouts).length > 0;
+  const last = S.meta.lastBackup || 0;
+  const days = last ? dayNum(today()) - dayNum(startOfDay(new Date(last))) : Infinity;
+  const anchorTs = last || S.meta.createdAt || Date.now();
+  const age = dayNum(today()) - dayNum(startOfDay(new Date(anchorTs)));
+  if (!has || age < 7) { box.hidden = true; return; }
+  box.hidden = false;
+  box.replaceChildren(
+    el('span', null, days === Infinity ? 'Копия записей ещё ни разу не сохранялась.' : 'Копия не сохранялась ' + days + ' ' + plural(days, DAYS) + '.'),
+    btn('quickbtn', 'Сохранить', exportBackup));
+}
+function renderDiaryList() {
+  if (ui.editing) return;
+  const items = sortTasks(tasks.filter((t) => t.scope === ui.scope && t.period === curKey()));
+  renderProgress(items);
+  $('#list').replaceChildren(...items.map((t) => taskEl(t, {})));
+  const empty = $('#empty');
+  if (!items.length) {
+    empty.hidden = false;
+    empty.textContent = 'Пока пусто. Впиши дело в строку выше. «!» на полях отмечает важное, «⋯» переносит или удаляет.';
+  } else empty.hidden = true;
+  renderTails(); renderUpper(); renderExtra();
+}
+function rollover() {
+  const k = dayKey(today());
+  if (k === ui.todayKey) return;
+  const r = rel(ui.scope, ui.anchor, parseDay(ui.todayKey));
+  ui.todayKey = k;
+  ui.anchor = normalize(ui.scope, step(ui.scope, today(), r));
+}
+function renderDiary() {
+  rollover();
+  renderTop(); renderScopes(); renderPeriod(); renderDiaryList(); bindNote(); renderNudge();
+}
+function setScope(scope, date) {
+  let d = date;
+  if (!d) {
+    const t = today(), b = bounds(ui.scope, ui.anchor);
+    d = t >= b[0] && t <= b[1] ? t : b[0];
+  }
+  ui.scope = scope;
+  ui.anchor = normalize(scope, d);
+  rememberUi();
+  if (ui.tab !== 'diary') switchTab('diary');
+  else renderDiary();
+}
+function go(n) { ui.anchor = normalize(ui.scope, step(ui.scope, ui.anchor, n)); renderDiary(); }
+function goRel(n) { ui.anchor = normalize(ui.scope, step(ui.scope, today(), n)); renderDiary(); }
+
+/* заметка к периоду */
+let noteId = null, noteTimer = null, notePending = null;
+const noteText = (id) => { const n = S.notes[id]; return n && typeof n.text === 'string' ? n.text : ''; };
+function flushNote() {
+  clearTimeout(noteTimer); noteTimer = null;
+  const p = notePending; notePending = null;
+  if (!p) return;
+  const text = p.text.replace(/\s+$/, '');
+  if (text.trim()) S.notes[p.id] = { scope: p.scope, period: p.period, text, updatedAt: Date.now() };
+  else delete S.notes[p.id];
+  save();
+  $('#noteState').textContent = 'Сохранено';
+}
+function bindNote() {
+  const ta = $('#noteInput');
+  $('#noteLabel').textContent = { day: 'Заметка дня', week: 'Заметка недели', month: 'Заметка месяца' }[ui.scope];
+  ta.placeholder = { day: 'Как прошёл день, что мешало, что не забыть…', week: 'Итоги недели, мысли на следующую…', month: 'Главное за месяц, что перенести дальше…' }[ui.scope];
+  const id = ui.scope + '-' + curKey();
+  if (id !== noteId) {
+    flushNote();
+    noteId = id;
+    $('#noteState').textContent = '';
+    ta.value = noteText(id);
+    return;
+  }
+  if (document.activeElement !== ta && !notePending) ta.value = noteText(id);
+}
+$('#noteInput').addEventListener('input', () => {
+  notePending = { id: noteId, scope: ui.scope, period: curKey(), text: $('#noteInput').value };
+  $('#noteState').textContent = 'Сохраняю…';
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(flushNote, 600);
+});
+$('#noteInput').addEventListener('blur', flushNote);
+
+document.querySelectorAll('.scope').forEach((b) => b.addEventListener('click', () => setScope(b.dataset.scope)));
+$('#prevBtn').addEventListener('click', () => go(-1));
+$('#nextBtn').addEventListener('click', () => go(1));
+$('#addForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('#addInput'), v = input.value.trim().slice(0, 500);
+  if (!v) return;
+  input.value = '';
+  addTask(v);
+});
+
+/* ================= ЗАЛ ================= */
+const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const num = (v) => { const x = parseFloat(String(v).replace(',', '.')); return Number.isFinite(x) ? x : NaN; };
+const fmtKg = (x) => String(Math.round(x * 100) / 100).replace('.', ',');
+const e1rm = (w, r) => (r <= 1 ? w : w * (1 + r / 30));
+const setStr = (s) => (s.w > 0 ? fmtKg(s.w) + '×' : '') + s.r;
+const tonnage = (items) => items.reduce((sum, it) => sum + it.sets.reduce((a, s) => a + (s.w || 0) * s.r, 0), 0);
+const fmtInt = (x) => Math.round(x).toLocaleString('ru-RU');
+const TICK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function finishedWorkouts() {
+  return Object.keys(S.gym.workouts)
+    .map((id) => Object.assign({ id }, S.gym.workouts[id]))
+    .filter((w) => w && typeof w.date === 'string' && Array.isArray(w.items))
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.finishedAt || 0) - (a.finishedAt || 0)));
+}
+function lastSetsFor(name, excludeId) {
+  const n = normName(name);
+  for (const w of finishedWorkouts()) {
+    if (w.id === excludeId) continue;
+    const it = w.items.find((i) => normName(i.name) === n);
+    if (it && it.sets && it.sets.length) return { date: w.date, sets: it.sets };
+  }
+  return null;
+}
+function knownExerciseNames() {
+  const seen = new Map();
+  S.gym.days.forEach((d) => d.exercises.forEach((e) => { if (e.name.trim()) seen.set(normName(e.name), e.name.trim()); }));
+  finishedWorkouts().forEach((w) => w.items.forEach((i) => { if (!seen.has(normName(i.name))) seen.set(normName(i.name), i.name); }));
+  return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'ru'));
+}
+function fillDatalist() {
+  $('#exNames').replaceChildren(...knownExerciseNames().map((n) => { const o = el('option'); o.value = n; return o; }));
+}
+function targetText(sets, reps) {
+  const s = String(sets || '').trim(), r = String(reps || '').trim();
+  if (s && r) return s + '×' + r;
+  return r || (s ? s + ' подх.' : '');
+}
+function targetReps(target) { const m = String(target || '').match(/[×x*]\s*(\d+)\s*$/i); return m ? m[1] : ''; }
+function makeItem(name, sets, reps) {
+  const prev = lastSetsFor(name);
+  const n = Math.max(1, Math.min(12, parseInt(sets, 10) || (prev ? prev.sets.length : 3)));
+  return { id: newId(), name: String(name).trim(), target: targetText(sets, reps), rows: Array.from({ length: n }, () => ({ w: '', r: '', done: false })) };
+}
+/* Подсказка для подхода: сперва предыдущий подход этой же тренировки,
+   потом тот же подход прошлой тренировки; повторы — из плана. */
+function placeholderFor(it, j, prev) {
+  const ps = prev ? (prev.sets[j] || prev.sets[prev.sets.length - 1]) : null;
+  const before = j > 0 ? it.rows[j - 1] : null;
+  const tr = targetReps(it.target);
+  const w = before && String(before.w).trim() ? String(before.w).trim() : ps && ps.w ? fmtKg(ps.w) : '';
+  const r = tr || (before && String(before.r).trim() ? String(before.r).trim() : ps ? String(ps.r) : '');
+  return { w, r };
+}
+function suggestNextDay() {
+  const days = S.gym.days.filter((d) => d.exercises.some((e) => e.name.trim()));
+  if (!days.length) return null;
+  const last = finishedWorkouts().find((w) => w.dayId && days.some((d) => d.id === w.dayId));
+  if (!last) return days[0];
+  const idx = days.findIndex((d) => d.id === last.dayId);
+  return days[(idx + 1) % days.length];
+}
+
+function startWorkout(day) {
+  const items = day ? day.exercises.filter((e) => e.name.trim()).map((e) => makeItem(e.name, e.sets, e.reps)) : [];
+  S.gym.active = { id: newId(), date: dayKey(today()), dayId: day ? day.id : null, title: day ? day.name : 'Тренировка', startedAt: Date.now(), lastSetAt: 0, note: '', isEdit: false, items };
+  save(); renderGym();
+  window.scrollTo(0, 0);
+}
+function editWorkout(id) {
+  if (S.gym.active) { toast('Сначала заверши или отмени текущую тренировку'); return; }
+  const w = S.gym.workouts[id];
+  if (!w) return;
+  S.gym.active = {
+    id, date: w.date, dayId: w.dayId || null, title: w.title || 'Тренировка', startedAt: w.startedAt || Date.now(), finishedAt: w.finishedAt,
+    lastSetAt: 0, note: w.note || '', isEdit: true,
+    items: w.items.map((it) => ({ id: newId(), name: it.name, target: it.target || '', rows: it.sets.map((s) => ({ w: s.w ? fmtKg(s.w) : '', r: String(s.r), done: true })) })),
+  };
+  ui.gymView = 'workout'; rememberUi();
+  save(); renderGym();
+  window.scrollTo(0, 0);
+}
+function tickSet(i, j) {
+  const a = S.gym.active, it = a && a.items[i], r = it && it.rows[j];
+  if (!r) return;
+  if (r.done) { r.done = false; save(); renderGym(); return; }
+  const ph = placeholderFor(it, j, lastSetsFor(it.name, a.id));
+  if (!String(r.w).trim() && ph.w) r.w = ph.w;
+  if (!String(r.r).trim() && ph.r) r.r = ph.r;
+  const reps = parseInt(r.r, 10);
+  if (!(reps > 0)) { toast('Впиши, сколько было повторов'); return; }
+  if (String(r.w).trim() && !(num(r.w) >= 0)) { toast('Вес пишется числом, например 62,5'); return; }
+  r.r = String(reps);
+  r.done = true;
+  a.lastSetAt = Date.now();
+  save(); renderGym();
+}
+async function finishWorkout() {
+  const a = S.gym.active;
+  if (!a) return;
+  const items = a.items.map((it) => ({
+    name: it.name, target: it.target || '',
+    sets: it.rows.filter((r) => r.done).map((r) => ({ w: String(r.w).trim() ? num(r.w) || 0 : 0, r: parseInt(r.r, 10) || 0 })).filter((s) => s.r > 0),
+  })).filter((it) => it.sets.length);
+  if (!items.length) {
+    if (!(await confirmSheet('Нет ни одного отмеченного подхода. Удалить эту тренировку?', 'Удалить', true))) return;
+    if (a.isEdit) delete S.gym.workouts[a.id];
+    S.gym.active = null; save(); renderGym();
+    return;
+  }
+  const loose = a.items.reduce((n, it) => n + it.rows.filter((r) => !r.done && (String(r.w).trim() || String(r.r).trim())).length, 0);
+  if (loose && !(await confirmSheet(loose + ' ' + plural(loose, ['подход', 'подхода', 'подходов']) + ' с цифрами, но без галочки, не попадут в запись. Завершить?', 'Завершить'))) return;
+  S.gym.workouts[a.id] = { date: a.date, dayId: a.dayId, title: a.title, startedAt: a.startedAt, finishedAt: a.isEdit && a.finishedAt ? a.finishedAt : Date.now(), note: (a.note || '').trim(), items };
+  S.gym.active = null;
+  save();
+  toast((a.isEdit ? 'Изменения сохранены' : 'Тренировка сохранена') + ': ' + items.length + ' упр., ' + fmtInt(tonnage(items)) + ' кг');
+  renderGym();
+  window.scrollTo(0, 0);
+}
+async function cancelWorkout() {
+  const a = S.gym.active;
+  if (!a) return;
+  const ok = await confirmSheet(a.isEdit ? 'Отменить правку? Запись останется как была.' : 'Удалить начатую тренировку? Отмеченные подходы пропадут.', a.isEdit ? 'Отменить правку' : 'Удалить тренировку', !a.isEdit);
+  if (!ok) return;
+  S.gym.active = null; save(); renderGym();
+}
+function itemSheet(i) {
+  const a = S.gym.active, it = a && a.items[i];
+  if (!it) return;
+  openSheet(it.name, (p) => {
+    if (i > 0) p.append(sheetBtn('Поднять выше', () => { a.items.splice(i - 1, 0, a.items.splice(i, 1)[0]); save(); renderGym(); }));
+    if (i < a.items.length - 1) p.append(sheetBtn('Опустить ниже', () => { a.items.splice(i + 1, 0, a.items.splice(i, 1)[0]); save(); renderGym(); }));
+    p.append(sheetBtn('Убрать упражнение', () => {
+      const removed = a.items.splice(i, 1)[0];
+      save(); renderGym();
+      toast('Упражнение убрано', () => { if (S.gym.active === a) { a.items.splice(i, 0, removed); save(); renderGym(); } });
+    }, 'danger'));
+  });
+}
+
+/* ---------- экраны зала ---------- */
+function workoutView(box) {
+  const a = S.gym.active;
+  if (!a) { startView(box); return; }
+  const head = el('div', 'card');
+  const hrow = el('div', 'row between');
+  hrow.append(el('h2', null, a.title));
+  if (a.isEdit) hrow.append(el('span', 'pill', 'правка записи'));
+  const dateIn = el('input', 'field w-date');
+  dateIn.type = 'date'; dateIn.id = 'wDate'; dateIn.value = a.date;
+  data(dateIn, { a: 'w-date' });
+  dateIn.setAttribute('aria-label', 'Дата тренировки');
+  const timers = el('div', 'w-timers');
+  const el1 = el('span'); el1.id = 'wElapsed';
+  const el2 = el('span'); el2.id = 'wRest';
+  timers.append(el1, el2);
+  head.append(hrow, dateIn);
+  if (!a.isEdit) head.append(timers);
+  box.append(head);
+
+  a.items.forEach((it, i) => box.append(itemCard(it, i, a)));
+
+  const add = el('div', 'card');
+  add.append(el('span', 'lbl', 'Добавить упражнение'));
+  const arow = el('div', 'add');
+  const ain = el('input', 'field');
+  ain.type = 'text'; ain.id = 'addExInput'; ain.setAttribute('list', 'exNames'); ain.placeholder = 'Например, жим лёжа';
+  ain.setAttribute('enterkeyhint', 'done'); ain.maxLength = 80;
+  ain.setAttribute('aria-label', 'Название упражнения');
+  ain.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addExercise(); } });
+  arow.append(ain, data(btn('primary', '+'), { a: 'add-ex' }));
+  add.append(arow);
+  box.append(add);
+
+  const noteCard = el('div', 'card');
+  const nl = el('label', 'lbl', 'Заметка к тренировке'); nl.htmlFor = 'wNote';
+  const nt = el('textarea', 'field'); nt.id = 'wNote'; nt.value = a.note || '';
+  nt.placeholder = 'Самочувствие, сон, что было тяжело…';
+  data(nt, { a: 'w-note' });
+  noteCard.append(nl, nt);
+  box.append(noteCard);
+
+  const fin = el('div', 'stack');
+  fin.append(data(btn('primary', a.isEdit ? 'Сохранить изменения' : 'Завершить тренировку'), { a: 'finish' }));
+  fin.append(data(btn('ghost danger', a.isEdit ? 'Отменить правку' : 'Отменить тренировку'), { a: 'cancel' }));
+  box.append(fin);
+  updateTimers();
+}
+function itemCard(it, i, a) {
+  const prev = lastSetsFor(it.name, a.id);
+  const card = el('div', 'card');
+  const head = el('div', 'ex-head');
+  const title = el('div', 'stack');
+  title.style.gap = '4px';
+  const h = el('h3', null, it.name);
+  title.append(h);
+  if (it.target) title.append(el('span', 'pill', 'план ' + it.target));
+  head.append(title, data(btn('more', '⋯'), { a: 'item-menu', i }));
+  head.lastChild.setAttribute('aria-label', 'Действия с упражнением');
+  card.append(head);
+  card.append(el('p', 'ex-prev', prev
+    ? 'Прошлый раз, ' + shortDate(prev.date) + ': ' + prev.sets.map(setStr).join(', ')
+    : 'Раньше не делал: сравнивать пока не с чем'));
+  const sets = el('div', 'sets');
+  it.rows.forEach((r, j) => {
+    const ph = placeholderFor(it, j, prev);
+    const row = el('div', 'set' + (r.done ? ' done' : ''));
+    const w = el('input');
+    w.type = 'text'; w.inputMode = 'decimal'; w.value = r.w; w.placeholder = ph.w || '—'; w.id = 'w-' + it.id + '-' + j;
+    w.setAttribute('aria-label', it.name + ', подход ' + (j + 1) + ', вес в кг');
+    data(w, { a: 'set-w', i, j });
+    const rp = el('input');
+    rp.type = 'text'; rp.inputMode = 'numeric'; rp.value = r.r; rp.placeholder = ph.r || '—'; rp.id = 'r-' + it.id + '-' + j;
+    rp.setAttribute('aria-label', it.name + ', подход ' + (j + 1) + ', повторы');
+    data(rp, { a: 'set-r', i, j });
+    const tick = data(btn('tick'), { a: 'tick', i, j });
+    tick.innerHTML = TICK_SVG;
+    tick.setAttribute('aria-pressed', String(!!r.done));
+    tick.setAttribute('aria-label', r.done ? 'Снять отметку с подхода ' + (j + 1) : 'Отметить подход ' + (j + 1));
+    row.append(el('span', 'n', String(j + 1)), w, el('span', 'u', 'кг'), el('span', 'x', '×'), rp, el('span', 'u', 'повт'), tick);
+    sets.append(row);
+  });
+  card.append(sets);
+  const foot = el('div', 'row');
+  foot.append(data(btn('minor', '+ подход'), { a: 'add-row', i }));
+  if (it.rows.length > 1) foot.append(data(btn('minor', '− подход'), { a: 'del-row', i }));
+  card.append(foot);
+  return card;
+}
+function startView(box) {
+  const next = suggestNextDay();
+  const days = S.gym.days.filter((d) => d.exercises.some((e) => e.name.trim()));
+  const card = el('div', 'card');
+  card.append(el('h2', null, 'Начать тренировку'));
+  if (days.length) {
+    days.forEach((d) => {
+      const b = data(btn('daybtn' + (next && next.id === d.id ? ' next' : '')), { a: 'start', day: d.id });
+      b.append(el('b', null, d.name + (next && next.id === d.id ? ' · следующая' : '')),
+        el('span', null, d.exercises.filter((e) => e.name.trim()).map((e) => e.name.trim()).join(', ')));
+      card.append(b);
+    });
+  } else {
+    card.append(el('p', 'muted', 'Программы пока нет. Её можно записать во вкладке «Программа», а можно начать пустую тренировку и добавлять упражнения по ходу.'));
+  }
+  card.append(data(btn('ghost', 'Пустая тренировка'), { a: 'start', day: '' }));
+  box.append(card);
+
+  const last = finishedWorkouts()[0];
+  if (last) {
+    const lc = el('div', 'card');
+    lc.append(el('span', 'lbl', 'Последняя тренировка'));
+    lc.append(el('h3', null, (last.title || 'Тренировка') + ' · ' + shortDate(last.date)));
+    last.items.forEach((it) => {
+      const p = el('div', 'hitem');
+      p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.map(setStr).join(', ')));
+      lc.append(p);
+    });
+    box.append(lc);
+  }
+}
+function updateTimers() {
+  const a = S.gym.active;
+  const e1 = $('#wElapsed'), e2 = $('#wRest');
+  if (!a || !e1) return;
+  const mins = Math.max(0, Math.floor((Date.now() - a.startedAt) / 60000));
+  e1.replaceChildren(document.createTextNode('идёт '), el('b', null, mins < 60 ? mins + ' мин' : Math.floor(mins / 60) + ' ч ' + pad(mins % 60) + ' мин'));
+  if (a.lastSetAt) {
+    const s = Math.max(0, Math.floor((Date.now() - a.lastSetAt) / 1000));
+    e2.replaceChildren(document.createTextNode('отдых '), el('b', null, Math.floor(s / 60) + ':' + pad(s % 60)));
+  } else e2.replaceChildren();
+}
+setInterval(() => { if (ui.tab === 'gym' && ui.gymView === 'workout' && !document.hidden) updateTimers(); }, 1000);
+
+function programView(box) {
+  if (!S.gym.days.length) {
+    const c = el('div', 'card');
+    c.append(el('h2', null, 'Программы пока нет'));
+    c.append(el('p', 'muted', 'Запиши тренировочные дни: например, «Тренировка А» с приседом 3×5 и жимом 3×5. Подходы и повторы из программы станут подсказками на тренировке.'));
+    c.append(data(btn('primary', '+ Тренировочный день'), { a: 'add-day' }));
+    box.append(c);
+    return;
+  }
+  S.gym.days.forEach((d) => box.append(ui.editDay === d.id ? dayEditor(d) : dayCard(d)));
+  box.append(data(btn('ghost', '+ Тренировочный день'), { a: 'add-day' }));
+}
+function dayCard(d) {
+  const c = el('div', 'card');
+  const head = el('div', 'row between');
+  head.append(el('h2', null, d.name), data(btn('quickbtn', 'Изменить'), { a: 'edit-day', day: d.id }));
+  c.append(head);
+  const list = d.exercises.filter((e) => e.name.trim());
+  if (!list.length) c.append(el('p', 'muted', 'Упражнений пока нет.'));
+  list.forEach((e) => {
+    const row = el('div', 'pday-ex');
+    row.append(el('span', null, e.name), el('span', 'pill', targetText(e.sets, e.reps) || '—'));
+    c.append(row);
+  });
+  return c;
+}
+function dayEditor(d) {
+  const c = el('div', 'card ped');
+  const nl = el('label', 'lbl', 'Название дня'); nl.htmlFor = 'dn-' + d.id;
+  const name = el('input', 'field'); name.type = 'text'; name.id = 'dn-' + d.id; name.value = d.name; name.maxLength = 60;
+  data(name, { a: 'day-name', day: d.id });
+  c.append(nl, name);
+  const hdr = el('div', 'ped-row');
+  hdr.style.borderTop = '0'; hdr.style.paddingBottom = '0';
+  hdr.append(el('span', 'lbl', 'Упражнение'), el('span', 'lbl', 'Подх.'), el('span', 'lbl', 'Повт.'));
+  c.append(hdr);
+  d.exercises.forEach((e, k) => {
+    const row = el('div', 'ped-row');
+    const en = el('input', 'field'); en.type = 'text'; en.value = e.name; en.placeholder = 'Упражнение'; en.setAttribute('list', 'exNames'); en.id = 'pe-' + e.id; en.maxLength = 80;
+    en.setAttribute('aria-label', 'Упражнение ' + (k + 1));
+    data(en, { a: 'ex-name', day: d.id, ex: e.id });
+    const es = el('input', 'field num'); es.type = 'text'; es.inputMode = 'numeric'; es.value = e.sets; es.placeholder = '3'; es.id = 'ps-' + e.id; es.maxLength = 3;
+    es.setAttribute('aria-label', 'Подходы, упражнение ' + (k + 1));
+    data(es, { a: 'ex-sets', day: d.id, ex: e.id });
+    const er = el('input', 'field num'); er.type = 'text'; er.value = e.reps; er.placeholder = '5'; er.id = 'pr-' + e.id; er.maxLength = 12;
+    er.setAttribute('aria-label', 'Повторы, упражнение ' + (k + 1));
+    data(er, { a: 'ex-reps', day: d.id, ex: e.id });
+    const tools = el('div', 'tools');
+    if (k > 0) tools.append(data(btn('iconbtn', '↑'), { a: 'ex-up', day: d.id, ex: e.id }));
+    if (k < d.exercises.length - 1) tools.append(data(btn('iconbtn', '↓'), { a: 'ex-down', day: d.id, ex: e.id }));
+    tools.append(data(btn('iconbtn danger', 'Убрать'), { a: 'ex-del', day: d.id, ex: e.id }));
+    tools.querySelectorAll('.iconbtn').forEach((b) => b.setAttribute('aria-label', b.textContent === '↑' ? 'Выше' : b.textContent === '↓' ? 'Ниже' : 'Убрать упражнение'));
+    row.append(en, es, er, tools);
+    c.append(row);
+  });
+  c.append(data(btn('ghost', '+ упражнение'), { a: 'ex-add', day: d.id }));
+  c.append(el('p', 'muted', 'Повторы можно писать диапазоном, например 8–10.'));
+  const foot = el('div', 'row between');
+  foot.append(data(btn('ghost danger', 'Удалить день'), { a: 'del-day', day: d.id }), data(btn('primary', 'Готово'), { a: 'done-day', day: d.id }));
+  c.append(foot);
+  return c;
+}
+const LETTERS = 'АБВГДЕЖЗИК';
+function addDay() {
+  const d = { id: newId(), name: 'Тренировка ' + (LETTERS[S.gym.days.length] || S.gym.days.length + 1), exercises: [{ id: newId(), name: '', sets: '3', reps: '' }] };
+  S.gym.days.push(d);
+  ui.editDay = d.id;
+  save(); renderGym();
+}
+const dayById = (id) => S.gym.days.find((d) => d.id === id);
+
+function exerciseStats() {
+  const map = new Map();
+  finishedWorkouts().slice().reverse().forEach((w) => {
+    w.items.forEach((it) => {
+      const k = normName(it.name);
+      const sets = (it.sets || []).filter((s) => s.r > 0);
+      if (!k || !sets.length) return;
+      let e = map.get(k);
+      if (!e) { e = { key: k, name: it.name, points: [] }; map.set(k, e); }
+      e.name = it.name;
+      const best = sets.reduce((b, s) => (e1rm(s.w || 0, s.r) > e1rm(b.w || 0, b.r) ? s : b), sets[0]);
+      e.points.push({ date: w.date, maxW: Math.max(...sets.map((s) => s.w || 0)), e1: e1rm(best.w || 0, best.r), best, maxR: Math.max(...sets.map((s) => s.r)), sets });
+    });
+  });
+  return Array.from(map.values()).map((e) => {
+    e.bw = e.points.every((p) => p.maxW === 0);
+    e.last = e.points[e.points.length - 1];
+    e.first = e.points[0];
+    e.pr = e.bw ? Math.max(...e.points.map((p) => p.maxR)) : Math.max(...e.points.map((p) => p.maxW));
+    return e;
+  }).sort((a, b) => (a.last.date < b.last.date ? 1 : a.last.date > b.last.date ? -1 : a.name.localeCompare(b.name, 'ru')));
+}
+function progressView(box) {
+  const stats = exerciseStats();
+  if (!stats.length) {
+    const c = el('div', 'card');
+    c.append(el('h2', null, 'Прогресс появится после первой тренировки'));
+    c.append(el('p', 'muted', 'Отмечай подходы галочкой и завершай тренировку. Здесь будут лучшие веса, рекорды и график по каждому упражнению.'));
+    box.append(c);
+    return;
+  }
+  if (ui.progressEx) {
+    const e = stats.find((x) => x.key === ui.progressEx);
+    if (e) { exerciseDetail(box, e); return; }
+    ui.progressEx = null;
+  }
+  const list = el('div', 'exlist');
+  stats.forEach((e) => {
+    const b = data(btn('exrow'), { a: 'prog-open', key: e.key });
+    const delta = e.bw ? e.last.maxR - e.first.maxR : e.last.maxW - e.first.maxW;
+    const right = el('div', 'right');
+    right.append(el('b', null, e.bw ? 'рекорд ' + e.pr + ' повт' : 'рекорд ' + fmtKg(e.pr) + ' кг'));
+    if (e.points.length > 1) {
+      const dl = el('span', 'delta' + (delta < 0 ? ' neg' : delta === 0 ? ' zero' : ''), (delta > 0 ? '+' : delta < 0 ? '−' : '±') + (e.bw ? Math.abs(delta) + ' повт' : fmtKg(Math.abs(delta)) + ' кг'));
+      right.append(dl);
+    }
+    b.append(el('b', null, e.name), right, el('span', 'sub', shortDate(e.last.date) + ': ' + e.last.sets.map(setStr).join(', ')));
+    list.append(b);
+  });
+  box.append(list);
+}
+function exerciseDetail(box, e) {
+  const back = data(btn('quickbtn', '‹ Все упражнения'), { a: 'prog-back' });
+  back.style.justifySelf = 'start';
+  box.append(back);
+  const c = el('div', 'card');
+  c.append(el('h2', null, e.name));
+  const metrics = e.bw ? [['r', 'Повторы']] : [['w', 'Рабочий вес'], ['e', '1ПМ (расчёт)'], ['r', 'Повторы']];
+  if (!metrics.some((m) => m[0] === ui.progressMetric)) ui.progressMetric = metrics[0][0];
+  if (metrics.length > 1) {
+    const seg = el('div', 'seg small');
+    metrics.forEach(([k, label]) => {
+      const b = data(btn(null, label), { a: 'metric', m: k });
+      b.setAttribute('aria-selected', String(ui.progressMetric === k));
+      seg.append(b);
+    });
+    c.append(seg);
+  }
+  const m = ui.progressMetric;
+  const val = m === 'w' ? (p) => p.maxW : m === 'e' ? (p) => p.e1 : (p) => p.maxR;
+  const unit = m === 'r' ? 'повт' : 'кг';
+  const chart = el('div', 'chart');
+  chart.innerHTML = chartSVG(e.points.slice(-24), val, unit);
+  c.append(chart);
+  if (e.points.length < 2) c.append(el('p', 'muted', 'Для линии нужны хотя бы две тренировки с этим упражнением.'));
+  if (m === 'e') c.append(el('p', 'muted', '1ПМ считается по формуле Эпли из лучшего подхода: это оценка, а не настоящий максимум.'));
+  box.append(c);
+  const hist = el('div', 'card');
+  hist.append(el('span', 'lbl', 'Все тренировки с этим упражнением'));
+  e.points.slice().reverse().forEach((p) => {
+    const row = el('div', 'sess');
+    row.append(el('span', 'd', shortDate(p.date)), el('span', null, p.sets.map(setStr).join(', ')));
+    hist.append(row);
+  });
+  box.append(hist);
+}
+function chartSVG(pts, val, unit) {
+  const W = 340, H = 190, L = 44, R = 14, T = 14, B = 28;
+  const vals = pts.map(val);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (lo === hi) { lo -= unit === 'кг' ? 5 : 2; hi += unit === 'кг' ? 5 : 2; }
+  const padY = (hi - lo) * 0.15;
+  lo = Math.max(0, lo - padY); hi += padY;
+  const d0 = dayNum(parseDay(pts[0].date)), d1 = dayNum(parseDay(pts[pts.length - 1].date));
+  const x = (p) => (d1 === d0 ? L + (W - L - R) / 2 : L + (dayNum(parseDay(p.date)) - d0) / (d1 - d0) * (W - L - R));
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const fmt = (v) => (unit === 'кг' ? fmtKg(Math.round(v * 2) / 2) : String(Math.round(v)));
+  let g = '';
+  [lo, (lo + hi) / 2, hi].forEach((v) => {
+    const yy = y(v).toFixed(1);
+    g += '<line class="gl" x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '"/>';
+    g += '<text class="ax" x="' + (L - 6) + '" y="' + (Number(yy) + 4) + '" text-anchor="end">' + fmt(v) + '</text>';
+  });
+  const xy = pts.map((p) => [x(p), y(val(p))]);
+  const line = xy.map((q) => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ');
+  const base = (H - B).toFixed(1);
+  let area = '';
+  if (xy.length > 1) area = '<polygon class="ar" points="' + xy[0][0].toFixed(1) + ',' + base + ' ' + line + ' ' + xy[xy.length - 1][0].toFixed(1) + ',' + base + '"/>';
+  const dots = xy.map((q, i) => '<circle class="pt' + (i === xy.length - 1 ? ' last' : '') + '" cx="' + q[0].toFixed(1) + '" cy="' + q[1].toFixed(1) + '" r="' + (i === xy.length - 1 ? 5 : 3.5) + '"/>').join('');
+  const lab = (p, anchor, xx) => '<text class="ax" x="' + xx.toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + anchor + '">' + parseDay(p.date).getDate() + ' ' + MONTHS_SHORT[parseDay(p.date).getMonth()] + '</text>';
+  let xl = lab(pts[0], pts.length > 1 ? 'start' : 'middle', xy[0][0]);
+  if (pts.length > 1) xl += lab(pts[pts.length - 1], 'end', xy[xy.length - 1][0]);
+  const lastV = '<text class="ax" x="' + Math.min(W - R, xy[xy.length - 1][0]).toFixed(1) + '" y="' + Math.max(12, xy[xy.length - 1][1] - 10).toFixed(1) + '" text-anchor="end" style="fill:var(--ink);font-weight:700">' + fmt(val(pts[pts.length - 1])) + ' ' + unit + '</text>';
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="График по тренировкам">' + g + area + (xy.length > 1 ? '<polyline class="ln" points="' + line + '"/>' : '') + dots + xl + lastV + '</svg>';
+}
+
+function historyView(box) {
+  const ws = finishedWorkouts();
+  if (!ws.length) {
+    const c = el('div', 'card');
+    c.append(el('h2', null, 'Тренировок пока нет'));
+    c.append(el('p', 'muted', 'Завершённые тренировки появятся здесь, по дате.'));
+    box.append(c);
+    return;
+  }
+  const list = el('div', 'hist');
+  ws.forEach((w) => {
+    const c = el('div', 'card');
+    c.style.padding = '0';
+    const sets = w.items.reduce((n, it) => n + it.sets.length, 0);
+    const open = ui.openWorkout === w.id;
+    const row = data(btn('hrow'), { a: 'hist-toggle', id: w.id });
+    row.setAttribute('aria-expanded', String(open));
+    row.append(el('b', null, shortDate(w.date) + ' · ' + (w.title || 'Тренировка')),
+      el('span', 'sub', w.items.length + ' упр. · ' + sets + ' ' + plural(sets, ['подход', 'подхода', 'подходов']) + ' · ' + fmtInt(tonnage(w.items)) + ' кг'));
+    c.append(row);
+    if (open) {
+      const det = el('div', 'hdetail');
+      w.items.forEach((it) => {
+        const p = el('div', 'hitem');
+        p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.map(setStr).join(', ')));
+        det.append(p);
+      });
+      if (w.note) det.append(el('p', 'muted', w.note));
+      const tools = el('div', 'row');
+      tools.append(data(btn('quickbtn', 'Изменить'), { a: 'hist-edit', id: w.id }), data(btn('quickbtn', 'Удалить'), { a: 'hist-del', id: w.id }));
+      tools.lastChild.style.color = 'var(--margin)';
+      det.append(tools);
+      c.append(det);
+    }
+    list.append(c);
+  });
+  box.append(list);
+}
+
+function renderGym() {
+  document.querySelectorAll('.gv').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === ui.gymView)));
+  const ws = finishedWorkouts();
+  const a = S.gym.active;
+  $('#gymLine').textContent = a ? (a.isEdit ? 'Правка тренировки' : 'Идёт тренировка') : ws.length ? 'Последняя: ' + shortDate(ws[0].date) : 'Тренировок пока нет';
+  fillDatalist();
+  const box = $('#gymBody');
+  const y = window.scrollY;
+  box.replaceChildren();
+  if (ui.gymView === 'workout') workoutView(box);
+  else if (ui.gymView === 'program') programView(box);
+  else if (ui.gymView === 'progress') progressView(box);
+  else historyView(box);
+  window.scrollTo(0, y);
+}
+function addExercise() {
+  const a = S.gym.active, inp = $('#addExInput');
+  if (!a || !inp) return;
+  const name = inp.value.trim();
+  if (!name) { inp.focus(); return; }
+  const planned = S.gym.days.flatMap((d) => d.exercises).find((e) => normName(e.name) === normName(name));
+  a.items.push(makeItem(name, planned ? planned.sets : '', planned ? planned.reps : ''));
+  save(); renderGym();
+}
+
+document.querySelectorAll('.gv').forEach((b) => b.addEventListener('click', () => {
+  ui.gymView = b.dataset.view; ui.editDay = null; rememberUi(); renderGym(); window.scrollTo(0, 0);
+}));
+$('#gymBody').addEventListener('input', (e) => {
+  const t = e.target, a = t.dataset.a;
+  if (!a) return;
+  const act = S.gym.active;
+  if ((a === 'set-w' || a === 'set-r') && act) {
+    const r = act.items[+t.dataset.i] && act.items[+t.dataset.i].rows[+t.dataset.j];
+    if (r) { r[a === 'set-w' ? 'w' : 'r'] = t.value.trim(); save(); }
+  } else if (a === 'w-note' && act) { act.note = t.value; save(); }
+  else if (a === 'w-date' && act) { if (/^\d{4}-\d{2}-\d{2}$/.test(t.value)) { act.date = t.value; save(); } }
+  else if (a === 'day-name') { const d = dayById(t.dataset.day); if (d) { d.name = t.value; save(); } }
+  else if (a === 'ex-name' || a === 'ex-sets' || a === 'ex-reps') {
+    const d = dayById(t.dataset.day), ex = d && d.exercises.find((x) => x.id === t.dataset.ex);
+    if (ex) { ex[a === 'ex-name' ? 'name' : a === 'ex-sets' ? 'sets' : 'reps'] = t.value; save(); }
+  }
+});
+$('#gymBody').addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-a]');
+  if (!t || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return;
+  const a = t.dataset.a, act = S.gym.active;
+  const i = +t.dataset.i, j = +t.dataset.j;
+  if (a === 'start') { startWorkout(t.dataset.day ? dayById(t.dataset.day) : null); }
+  else if (a === 'tick') tickSet(i, j);
+  else if (a === 'add-row' && act) { const it = act.items[i]; const last = it.rows[it.rows.length - 1]; it.rows.push({ w: last && last.done ? last.w : '', r: '', done: false }); save(); renderGym(); }
+  else if (a === 'del-row' && act) { const it = act.items[i]; if (it.rows.length > 1) { it.rows.pop(); save(); renderGym(); } }
+  else if (a === 'item-menu') itemSheet(i);
+  else if (a === 'add-ex') addExercise();
+  else if (a === 'finish') finishWorkout();
+  else if (a === 'cancel') cancelWorkout();
+  else if (a === 'add-day') addDay();
+  else if (a === 'edit-day') { ui.editDay = t.dataset.day; renderGym(); }
+  else if (a === 'done-day') {
+    const d = dayById(t.dataset.day);
+    if (d) { d.exercises = d.exercises.filter((x) => x.name.trim()); d.name = d.name.trim() || 'Тренировка'; }
+    ui.editDay = null; save(); renderGym();
+  } else if (a === 'del-day') {
+    const d = dayById(t.dataset.day);
+    if (!d || !(await confirmSheet('Удалить «' + d.name + '» из программы? Прошлые тренировки останутся.', 'Удалить день', true))) return;
+    const idx = S.gym.days.indexOf(d);
+    S.gym.days.splice(idx, 1); ui.editDay = null; save(); renderGym();
+    toast('День удалён', () => { S.gym.days.splice(idx, 0, d); save(); renderGym(); });
+  } else if (a === 'ex-add') { const d = dayById(t.dataset.day); if (d) { d.exercises.push({ id: newId(), name: '', sets: '3', reps: '' }); save(); renderGym(); const inputs = document.querySelectorAll('[data-a="ex-name"][data-day="' + d.id + '"]'); if (inputs.length) inputs[inputs.length - 1].focus(); } }
+  else if (a === 'ex-up' || a === 'ex-down' || a === 'ex-del') {
+    const d = dayById(t.dataset.day);
+    if (!d) return;
+    const k = d.exercises.findIndex((x) => x.id === t.dataset.ex);
+    if (k < 0) return;
+    if (a === 'ex-del') d.exercises.splice(k, 1);
+    else { const to = a === 'ex-up' ? k - 1 : k + 1; if (to >= 0 && to < d.exercises.length) d.exercises.splice(to, 0, d.exercises.splice(k, 1)[0]); }
+    save(); renderGym();
+  } else if (a === 'prog-open') { ui.progressEx = t.dataset.key; renderGym(); window.scrollTo(0, 0); }
+  else if (a === 'prog-back') { ui.progressEx = null; renderGym(); }
+  else if (a === 'metric') { ui.progressMetric = t.dataset.m; renderGym(); }
+  else if (a === 'hist-toggle') { ui.openWorkout = ui.openWorkout === t.dataset.id ? null : t.dataset.id; renderGym(); }
+  else if (a === 'hist-edit') editWorkout(t.dataset.id);
+  else if (a === 'hist-del') {
+    const id = t.dataset.id, w = S.gym.workouts[id];
+    if (!w || !(await confirmSheet('Удалить тренировку ' + shortDate(w.date) + '?', 'Удалить', true))) return;
+    delete S.gym.workouts[id]; save(); renderGym();
+    toast('Тренировка удалена', () => { S.gym.workouts[id] = w; save(); renderGym(); });
+  }
+});
+
+/* ================= КОПИЯ ================= */
+function renderBackup() {
+  const ws = Object.keys(S.gym.workouts).length;
+  const st = $('#stats');
+  st.replaceChildren();
+  [[Object.keys(S.tasks).length, 'дел'], [Object.keys(S.notes).length, 'заметок'], [ws, 'тренировок']].forEach(([n, l]) => {
+    const s = el('div', 'stat'); s.append(el('b', null, String(n)), el('span', null, l)); st.append(s);
+  });
+  $('#lastBackup').textContent = S.meta.lastBackup ? 'Последняя копия: ' + daysAgoText(S.meta.lastBackup) + '.' : 'Копия ещё ни разу не сохранялась.';
+  $('#backupLine').textContent = 'файл с записями';
+  const line = $('#storageLine');
+  line.textContent = '';
+  if (navigator.storage && navigator.storage.persisted) {
+    navigator.storage.persisted().then((p) => {
+      line.textContent = p ? 'Телефон отметил записи как важные и не будет удалять их сам.' : 'Телефон может удалить записи, если долго не открывать приложение или кончится место. Копия защищает от этого.';
+    }).catch(() => {});
+  }
+}
+function markBackup() { S.meta.lastBackup = Date.now(); save(); renderBackup(); renderNudge(); toast('Копия сохранена'); }
+async function exportBackup() {
+  await flush();
+  const text = JSON.stringify(Object.assign({ app: 'dnevnik', exportedAt: new Date().toISOString() }, S), null, 1);
+  const name = 'dnevnik-' + dayKey(today()) + '.json';
+  let file = null;
+  try { file = new File([text], name, { type: 'application/json' }); } catch (e) { file = null; }
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Копия дневника' }); markBackup(); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = name;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  markBackup();
+}
+async function importText(text) {
+  let j;
+  try { j = JSON.parse(text); } catch (e) { toast('Это не копия дневника: текст не читается.'); return; }
+  if (!j || typeof j !== 'object' || (!j.tasks && !j.gym)) { toast('В этом файле нет записей дневника.'); return; }
+  if (j.gym) {
+    const has = Object.keys(S.tasks).length + Object.keys(S.gym.workouts).length + S.gym.days.length > 0;
+    const when = j.exportedAt ? ' от ' + shortDate(dayKey(new Date(j.exportedAt))) : '';
+    if (has && !(await confirmSheet('Заменить все записи на этом телефоне копией' + when + '?', 'Заменить', true))) return;
+    const keepBackup = S.meta.lastBackup;
+    S = normalizeState(j);
+    S.meta.lastBackup = Math.max(keepBackup || 0, S.meta.lastBackup || 0);
+    save(); rebuild(); renderAll();
+    toast('Копия восстановлена: ' + Object.keys(S.tasks).length + ' дел, ' + Object.keys(S.gym.workouts).length + ' тренировок');
+    return;
+  }
+  let added = 0, notes = 0;
+  Object.keys(obj(j.tasks)).forEach((id) => { const t = j.tasks[id]; if (!S.tasks[id] && validTask(t)) { S.tasks[id] = t; added++; } });
+  Object.keys(obj(j.notes)).forEach((id) => { const n = j.notes[id]; if (!S.notes[id] && n && typeof n.text === 'string') { S.notes[id] = n; notes++; } });
+  save(); rebuild(); renderAll();
+  toast(added || notes ? 'Перенесено с компьютера: ' + added + ' дел, ' + notes + ' заметок' : 'Новых записей в файле нет: всё уже здесь');
+}
+$('#exportBtn').addEventListener('click', exportBackup);
+$('#importFile').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  if (f.size > 20 * 1024 * 1024) { toast('Файл слишком большой для копии дневника.'); return; }
+  importText(await f.text());
+});
+$('#importTextBtn').addEventListener('click', () => { const v = $('#importText').value.trim(); if (v) { importText(v); $('#importText').value = ''; } });
+
+/* ================= вкладки и запуск ================= */
+function switchTab(tab) {
+  if (ui.editing) document.activeElement && document.activeElement.blur();
+  ui.tab = tab;
+  rememberUi();
+  renderAll();
+  window.scrollTo(0, 0);
+}
+function renderAll() {
+  ['diary', 'gym', 'backup'].forEach((t) => { $('#screen-' + t).hidden = t !== ui.tab; });
+  document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === ui.tab)));
+  if (ui.tab === 'diary') renderDiary();
+  else if (ui.tab === 'gym') renderGym();
+  else renderBackup();
+}
+document.querySelectorAll('.tabbar button').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAll(); });
+function scheduleMidnight() {
+  const n = new Date(), next = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 0, 0, 5);
+  setTimeout(() => { renderAll(); scheduleMidnight(); }, next - n);
+}
+
+function renderInstallHint() {
+  const standalone = window.navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  const box = $('#installHint');
+  if (standalone) { box.hidden = true; return; }
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  box.hidden = false;
+  box.replaceChildren(
+    el('b', null, 'Поставь дневник на экран «Домой»'),
+    el('span', null, ios
+      ? 'В Safari нажми кнопку «Поделиться» (квадрат со стрелкой) → «На экран „Домой“» → «Добавить». Потом открывай дневник с этого значка: записи, сделанные здесь во вкладке Safari, туда не попадут.'
+      : 'Открой эту страницу в Safari на iPhone и добавь её на экран «Домой». Записи, сделанные в этом окне, хранятся только в нём.'));
+}
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+load().then(() => {
+  rebuild();
+  renderInstallHint();
+  renderAll();
+  scheduleMidnight();
+});
+})();

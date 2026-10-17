@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Дневник</title>
+<meta name="description" content="Дела на день, неделю и месяц и дневник тренировок. Записи хранятся только в телефоне.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Дневник">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f3f5fa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e121a" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@700&display=swap">
+<style>
+/* Layout: phone-first single column with a fixed bottom tab bar (Дневник / Зал / Копия).
+   Diary keeps the squared notebook sheet with a red margin; the gym uses plain cards so
+   numbers and inputs stay easy to hit with a thumb. */
+:root {
+  --paper: #f3f5fa;
+  --sheet: #ffffff;
+  --grid: #e8edf6;
+  --line: #d8deea;
+  --fg: #1a2132;
+  --muted: #646e85;
+  --ink: #2545a8;
+  --ink-soft: #e9eefc;
+  --on-ink: #ffffff;
+  --margin: #d6505b;
+  --done: #2b8253;
+  --scrim: rgba(14, 20, 36, .42);
+  --font-hand: "Caveat", "Snell Roundhand", "Segoe Print", cursive;
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --gutter: 46px;
+  --rule: 34px;
+  --tabbar: 58px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e121a; --sheet: #161b26; --grid: #1b2130; --line: #2a3243;
+    --fg: #e6e9f1; --muted: #8f98ac; --ink: #93abff; --ink-soft: #1d2747; --on-ink: #0e121a;
+    --margin: #ef7d86; --done: #62c491; --scrim: rgba(0, 0, 0, .55);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.4;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; touch-action: manipulation; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding-inline: 16px;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 14px);
+  padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 28px);
+}
+.screen { display: grid; gap: 14px; }
+
+/* header */
+.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; }
+.brand { margin: 0; font-family: var(--font-hand); font-weight: 700; font-size: 42px; line-height: .95; color: var(--ink); }
+.today { margin: 0; color: var(--muted); font-size: 14px; }
+
+.banner {
+  display: grid; gap: 6px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ink) 35%, var(--line));
+  border-radius: 12px;
+  background: var(--ink-soft);
+  font-size: 14px;
+}
+.banner b { color: var(--ink); }
+.nudge {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--margin) 12%, var(--sheet));
+  font-size: 14px;
+}
+
+/* segmented controls */
+.seg {
+  display: grid;
+  grid-auto-columns: 1fr; grid-auto-flow: column;
+  gap: 4px; padding: 4px;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.seg button {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px; padding: 6px 4px;
+  border: 0; border-radius: 9px;
+  background: transparent; color: var(--muted);
+  font-size: 15px; font-weight: 600;
+}
+.seg.small button { font-size: 13px; }
+.seg button[aria-selected="true"] { background: var(--ink); color: var(--on-ink); }
+.badge {
+  min-width: 20px; padding: 0 6px;
+  border-radius: 999px;
+  background: var(--ink-soft); color: var(--ink);
+  font-size: 12px; font-weight: 700; line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.seg button[aria-selected="true"] .badge { background: color-mix(in srgb, var(--on-ink) 24%, transparent); color: var(--on-ink); }
+
+/* period navigator */
+.period { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px 8px; }
+.navbtn {
+  width: 44px; height: 44px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--sheet);
+  font-size: 22px; line-height: 1;
+}
+.plabel { text-align: center; min-width: 0; }
+.plabel h2 { margin: 0; font-family: var(--font-hand); font-weight: 700; font-size: 34px; line-height: 1.05; color: var(--ink); }
+.plabel p { margin: 2px 0 0; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.quick { grid-column: 1 / -1; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
+.chip {
+  min-height: 34px; padding: 4px 14px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--sheet);
+  font-size: 14px; font-weight: 600;
+}
+.chip[aria-pressed="true"] { border-color: var(--ink); background: var(--ink-soft); color: var(--ink); }
+
+/* diary sheet: squared paper + red margin */
+.sheet {
+  position: relative;
+  padding: 16px 12px 18px var(--gutter);
+  background-color: var(--sheet);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 22px 22px;
+  background-position: -1px -1px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  min-width: 0;
+}
+.sheet::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: var(--rule);
+  width: 1.5px; background: var(--margin); opacity: .6;
+}
+.work { display: grid; gap: 16px; min-width: 0; }
+
+.progress { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.cells { display: flex; flex-wrap: wrap; gap: 3px; }
+.cell { width: 13px; height: 13px; border: 1.5px solid var(--ink); border-radius: 2px; opacity: .55; }
+.cell.on { background: var(--ink); opacity: 1; }
+.bar { width: 150px; max-width: 100%; height: 8px; border-radius: 4px; background: var(--ink-soft); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ink); }
+.ptext { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.ptext.all { color: var(--done); font-weight: 700; }
+
+.add { display: flex; gap: 8px; }
+.field, .add input {
+  min-width: 0; width: 100%;
+  min-height: 44px; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: var(--sheet);
+  font-size: 16px;
+}
+.add input { flex: 1; }
+.field:focus, .add input:focus { outline: 2px solid var(--ink); outline-offset: 0; border-color: transparent; }
+.primary {
+  min-height: 44px; padding: 0 16px;
+  border: 0; border-radius: 11px;
+  background: var(--ink); color: var(--on-ink);
+  font-size: 15px; font-weight: 700;
+}
+.ghost {
+  min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: var(--sheet);
+  font-size: 15px; font-weight: 600;
+}
+.ghost.danger { color: var(--margin); }
+.primary:disabled, .add input:disabled { opacity: .5; }
+
+/* tasks */
+.tasks { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.task {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 10px;
+  padding: 7px 0;
+}
+.mark {
+  position: absolute; top: 3px;
+  left: calc(var(--rule) / 2 - var(--gutter) - 14px);
+  width: 28px; height: 36px; padding: 0;
+  border: 0; background: transparent;
+  color: var(--margin);
+  font-family: var(--font-hand); font-size: 28px; font-weight: 700; line-height: 36px;
+  opacity: .2;
+}
+.task.important .mark { opacity: 1; }
+.check {
+  width: 28px; height: 28px; padding: 0;
+  display: grid; place-items: center;
+  border: 2px solid var(--ink); border-radius: 6px;
+  background: var(--sheet);
+}
+.check svg { width: 18px; height: 18px; stroke: var(--ink); opacity: 0; }
+.task.done .check svg { opacity: 1; }
+.tbody { min-width: 0; padding-top: 3px; }
+.text { overflow-wrap: anywhere; }
+.task.important .text { font-weight: 650; }
+.task.done .text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--ink); text-decoration-thickness: 1.5px; }
+.from { margin-left: 6px; color: var(--margin); font-size: 12px; white-space: nowrap; }
+.edit { width: 100%; margin: -4px 0; padding: 4px 8px; border: 1px solid var(--ink); border-radius: 8px; background: var(--sheet); font-size: 16px; }
+.side { display: flex; align-items: center; gap: 4px; }
+.more {
+  width: 36px; height: 32px; padding: 0;
+  border: 0; border-radius: 8px;
+  background: transparent; color: var(--muted);
+  font-size: 20px; line-height: 1;
+}
+.quickbtn {
+  min-height: 32px; padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--ink) 40%, var(--line)); border-radius: 999px;
+  background: var(--sheet); color: var(--ink);
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.empty { margin: 0; color: var(--muted); font-size: 15px; }
+
+.block { display: grid; gap: 8px; min-width: 0; }
+.block-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.block-h h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.block-h .count { color: var(--margin); letter-spacing: 0; }
+.block.tails .block-h h3 { color: var(--margin); }
+
+.days { display: grid; gap: 2px; }
+.dayrow {
+  display: grid; grid-template-columns: 50px minmax(0, 1fr) auto; align-items: baseline; gap: 8px;
+  width: 100%; min-height: 40px; padding: 8px 4px;
+  border: 0; border-radius: 8px; background: transparent; text-align: left;
+}
+.dname b { font-weight: 700; }
+.dayrow.we .dname b { color: var(--margin); }
+.dnum { color: var(--muted); font-variant-numeric: tabular-nums; }
+.dayrow.today .dname b, .dayrow.today .dnum { color: var(--ink); }
+.ditems { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.ditems.none { color: var(--muted); }
+.ditems.ok { color: var(--done); font-weight: 600; }
+.dcount { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.cal-h { text-align: center; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.cal-h.we { color: var(--margin); }
+.cal-d {
+  aspect-ratio: 1 / 1; min-width: 0;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start;
+  padding: 3px 4px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--sheet); text-align: left;
+}
+.cal-d { position: relative; }
+.cal-d.gym::after { content: ""; position: absolute; top: 5px; right: 4px; width: 9px; height: 3px; border-radius: 2px; background: var(--ink); }
+.legend { margin: 0; color: var(--muted); font-size: 12px; }
+.cal-d .num { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cal-d.we .num { color: var(--margin); }
+.cal-d.past .num { opacity: .55; }
+.cal-d.today { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.cal-d.today .num { color: var(--ink); opacity: 1; }
+.dots { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ink); }
+.dot.ok { background: var(--done); }
+.dot.miss { background: var(--margin); }
+.more-n { color: var(--muted); font-size: 9px; line-height: 1; }
+
+.note textarea, textarea.field { min-height: 84px; resize: vertical; line-height: 1.45; }
+.nstate { color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+/* gym */
+.card {
+  display: grid; gap: 10px; min-width: 0;
+  padding: 14px;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.card h2 { margin: 0; font-size: 19px; line-height: 1.25; }
+.card h3 { margin: 0; font-size: 17px; line-height: 1.25; overflow-wrap: anywhere; }
+.muted { color: var(--muted); font-size: 14px; margin: 0; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.between { justify-content: space-between; }
+.stack { display: grid; gap: 8px; }
+.pill {
+  display: inline-block; padding: 1px 8px;
+  border-radius: 999px; background: var(--ink-soft); color: var(--ink);
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.pill.warn { background: color-mix(in srgb, var(--margin) 16%, var(--sheet)); color: var(--margin); }
+.daybtn {
+  display: grid; gap: 2px; width: 100%;
+  padding: 12px 14px; min-height: 56px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--sheet); text-align: left;
+}
+.daybtn b { font-size: 16px; }
+.daybtn span { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daybtn.next { border-color: var(--ink); background: var(--ink-soft); }
+.daybtn.next b { color: var(--ink); }
+
+.w-timers { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.w-timers b { color: var(--fg); font-weight: 700; }
+.w-date { max-width: 180px; }
+.ex-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.ex-prev { margin: 0; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sets { display: grid; gap: 6px; }
+.set {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 22px 10px minmax(0, 1fr) 34px 44px;
+  align-items: center; gap: 5px;
+}
+.set .n { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; text-align: center; }
+.set .u { color: var(--muted); font-size: 13px; }
+.set .x { color: var(--muted); text-align: center; }
+.set input {
+  width: 100%; min-width: 0; height: 44px; padding: 0 6px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--paper);
+  font-size: 18px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
+}
+.set input::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); font-weight: 500; }
+.set input:focus { outline: 2px solid var(--ink); outline-offset: 0; border-color: transparent; }
+.set.done input { background: var(--ink-soft); border-color: transparent; color: var(--ink); }
+.tick {
+  width: 44px; height: 44px; padding: 0;
+  display: grid; place-items: center;
+  border: 2px solid var(--ink); border-radius: 12px;
+  background: var(--sheet);
+}
+.tick svg { width: 22px; height: 22px; stroke: var(--ink); }
+.set.done .tick { background: var(--ink); }
+.set.done .tick svg { stroke: var(--on-ink); }
+.minor {
+  min-height: 36px; padding: 0 12px;
+  border: 1px dashed var(--line); border-radius: 10px;
+  background: transparent; color: var(--muted);
+  font-size: 14px; font-weight: 600;
+}
+
+.pday-ex { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.pday-ex:first-of-type { border-top: 0; }
+.ped { display: grid; gap: 8px; }
+.ped-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 52px 70px; gap: 6px;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.ped-row .tools { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
+.ped-row .field { min-height: 42px; padding: 8px 10px; }
+.ped-row .num { text-align: center; }
+.iconbtn {
+  min-width: 40px; height: 36px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--sheet); font-size: 15px;
+}
+.iconbtn.danger { color: var(--margin); }
+.lbl { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+
+.exlist { display: grid; gap: 8px; }
+.exrow {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center;
+  width: 100%; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--sheet); text-align: left;
+}
+.exrow b { overflow-wrap: anywhere; }
+.exrow .sub { grid-column: 1; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.exrow .right { grid-column: 2; grid-row: 1 / span 2; text-align: right; font-variant-numeric: tabular-nums; }
+.delta { display: block; font-size: 13px; font-weight: 700; color: var(--done); }
+.delta.neg { color: var(--margin); }
+.delta.zero { color: var(--muted); }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart .ax { fill: var(--muted); font-size: 11px; font-family: var(--font-body); }
+.chart .gl { stroke: var(--line); stroke-width: 1; }
+.chart .ln { stroke: var(--ink); stroke-width: 2.5; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.chart .ar { fill: var(--ink); opacity: .12; }
+.chart .pt { fill: var(--sheet); stroke: var(--ink); stroke-width: 2; }
+.chart .pt.last { fill: var(--ink); }
+.sess { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; font-variant-numeric: tabular-nums; }
+.sess:first-child { border-top: 0; }
+.sess .d { color: var(--muted); }
+
+.hist { display: grid; gap: 8px; }
+.hrow { width: 100%; display: grid; gap: 2px; padding: 12px 14px; border: 0; background: transparent; text-align: left; }
+.hrow .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.hdetail { display: grid; gap: 8px; padding: 0 14px 14px; }
+.hitem { font-size: 14px; font-variant-numeric: tabular-nums; }
+.hitem b { font-weight: 650; }
+
+/* backup */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { padding: 10px; border-radius: 10px; background: var(--paper); text-align: center; }
+.stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; }
+.filebtn { position: relative; overflow: hidden; display: inline-grid; place-items: center; }
+.filebtn input { position: absolute; inset: 0; opacity: 0; font-size: 0; }
+
+/* tab bar */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: color-mix(in srgb, var(--sheet) 94%, transparent);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line);
+}
+.tabbar button {
+  height: var(--tabbar);
+  display: grid; place-items: center; align-content: center; gap: 2px;
+  border: 0; background: transparent; color: var(--muted);
+  font-size: 11px; font-weight: 600;
+}
+.tabbar svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tabbar button[aria-selected="true"] { color: var(--ink); }
+
+/* bottom sheet */
+.overlay { position: fixed; inset: 0; z-index: 20; background: var(--scrim); display: flex; align-items: flex-end; justify-content: center; }
+.sheet-panel {
+  width: 100%; max-width: 640px; max-height: 82vh; overflow: auto;
+  display: grid; gap: 8px;
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  background: var(--sheet);
+  border-radius: 18px 18px 0 0;
+}
+.sheet-title { margin: 0 0 4px; color: var(--muted); font-size: 14px; text-align: center; overflow-wrap: anywhere; }
+.sheet-btn {
+  width: 100%; min-height: 50px;
+  border: 0; border-radius: 12px;
+  background: var(--paper);
+  font-size: 17px; font-weight: 600;
+}
+.sheet-btn.danger { color: var(--margin); }
+.sheet-btn.cancel { background: transparent; color: var(--muted); }
+.sheet-btn.ok { background: var(--ink); color: var(--on-ink); }
+.sheet-date { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.sheet-date input { min-height: 50px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); font-size: 17px; }
+.sheet-date button { min-height: 50px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--paper); font-size: 16px; font-weight: 600; color: var(--ink); }
+
+.toast {
+  position: fixed; left: 50%; z-index: 30;
+  bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 12px);
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px;
+  width: max-content; max-width: calc(100vw - 32px);
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: var(--fg); color: var(--paper);
+  font-size: 15px;
+  box-shadow: 0 8px 24px rgba(10, 16, 32, .25);
+}
+.toast-undo { padding: 0; border: 0; background: transparent; color: var(--paper); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .sheet-panel { animation: rise .18s ease-out; }
+  @keyframes rise { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="banner" id="installHint" hidden></div>
+
+  <!-- ======================= ДНЕВНИК ======================= -->
+  <section class="screen" id="screen-diary">
+    <header class="top">
+      <h1 class="brand">Дневник</h1>
+      <p class="today" id="todayLine"></p>
+    </header>
+    <div class="nudge" id="backupNudge" hidden></div>
+
+    <nav class="seg" role="tablist" aria-label="Горизонт планирования">
+      <button type="button" role="tab" class="scope" data-scope="day">День <span class="badge" hidden></span></button>
+      <button type="button" role="tab" class="scope" data-scope="week">Неделя <span class="badge" hidden></span></button>
+      <button type="button" role="tab" class="scope" data-scope="month">Месяц <span class="badge" hidden></span></button>
+    </nav>
+
+    <section class="period" aria-label="Период">
+      <button class="navbtn" type="button" id="prevBtn" aria-label="Предыдущий день">‹</button>
+      <div class="plabel"><h2 id="pTitle">Сегодня</h2><p id="pSub"></p></div>
+      <button class="navbtn" type="button" id="nextBtn" aria-label="Следующий день">›</button>
+      <div class="quick" id="quick"></div>
+    </section>
+
+    <main class="sheet">
+      <div class="work">
+        <div class="progress" id="progress" hidden></div>
+        <form class="add" id="addForm" autocomplete="off">
+          <input id="addInput" type="text" maxlength="500" enterkeyhint="done" placeholder="Что сделать сегодня?" aria-label="Новое дело">
+          <button class="primary" type="submit" aria-label="Добавить">+</button>
+        </form>
+        <ul class="tasks" id="list"></ul>
+        <p class="empty" id="empty">Открываю записи…</p>
+        <section class="block tails" id="tails" hidden></section>
+        <section class="block" id="upper" hidden></section>
+        <section class="block" id="extra" hidden></section>
+        <section class="block note">
+          <div class="block-h"><h3><label for="noteInput" id="noteLabel">Заметка дня</label></h3><span class="nstate" id="noteState"></span></div>
+          <textarea class="field" id="noteInput" placeholder="Как прошёл день, что мешало, что не забыть…"></textarea>
+        </section>
+      </div>
+    </main>
+  </section>
+
+  <!-- ======================= ЗАЛ ======================= -->
+  <section class="screen" id="screen-gym" hidden>
+    <header class="top">
+      <h1 class="brand">Зал</h1>
+      <p class="today" id="gymLine"></p>
+    </header>
+    <nav class="seg small" role="tablist" aria-label="Раздел зала">
+      <button type="button" role="tab" class="gv" data-view="workout">Тренировка</button>
+      <button type="button" role="tab" class="gv" data-view="program">Программа</button>
+      <button type="button" role="tab" class="gv" data-view="progress">Прогресс</button>
+      <button type="button" role="tab" class="gv" data-view="history">История</button>
+    </nav>
+    <div class="stack" id="gymBody"></div>
+  </section>
+
+  <!-- ======================= КОПИЯ ======================= -->
+  <section class="screen" id="screen-backup" hidden>
+    <header class="top">
+      <h1 class="brand">Копия</h1>
+      <p class="today" id="backupLine"></p>
+    </header>
+
+    <div class="card">
+      <h2>Записи живут только в этом телефоне</h2>
+      <p class="muted">Если удалить значок с экрана «Домой», записи пропадут вместе с ним. Раз в неделю сохраняй копию в Файлы или себе в Telegram, тогда их всегда можно вернуть.</p>
+      <div class="stats" id="stats"></div>
+      <button class="primary" type="button" id="exportBtn">Сохранить копию</button>
+      <p class="muted" id="lastBackup"></p>
+    </div>
+
+    <div class="card">
+      <h2>Восстановить или перенести</h2>
+      <p class="muted">Подходит копия из этого приложения и файл <b>dnevnik.json</b> из дневника на компьютере. Записи с компьютера добавляются к тем, что уже есть.</p>
+      <label class="primary filebtn" for="importFile">Выбрать файл
+        <input type="file" id="importFile" accept=".json,application/json,text/plain">
+      </label>
+      <details>
+        <summary class="muted">Или вставить текст копии</summary>
+        <div class="stack" style="margin-top:8px">
+          <textarea class="field" id="importText" placeholder="Вставь сюда текст файла копии"></textarea>
+          <button class="ghost" type="button" id="importTextBtn">Восстановить из текста</button>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Как перенести дела с компьютера</h2>
+      <ol class="steps">
+        <li>На компьютере открой папку <b>claude workspace → dnevnik → data</b>.</li>
+        <li>Отправь файл <b>dnevnik.json</b> себе в Telegram, в «Избранное».</li>
+        <li>На iPhone открой этот файл в Telegram, нажми «Поделиться» → «Сохранить в Файлы».</li>
+        <li>Здесь нажми «Выбрать файл» и выбери его.</li>
+      </ol>
+    </div>
+
+    <p class="muted" id="storageLine"></p>
+  </section>
+</div>
+
+<nav class="tabbar" role="tablist" aria-label="Разделы">
+  <button type="button" role="tab" data-tab="diary">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v18M12 8h4M12 12h4M12 16h3"/></svg>Дневник
+  </button>
+  <button type="button" role="tab" data-tab="gym">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4M6 7v10M18 7v10M21 10v4M6 12h12"/></svg>Зал
+  </button>
+  <button type="button" role="tab" data-tab="backup">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></svg>Копия
+  </button>
+</nav>
+
+<div class="overlay" id="overlay" hidden><div class="sheet-panel" id="sheetPanel" role="dialog" aria-modal="true"></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<datalist id="exNames"></datalist>
+
+<script src="app.js"></script>
+</body>
+</html>
