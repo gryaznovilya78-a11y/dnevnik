@@ -388,7 +388,8 @@ button { cursor: pointer; touch-action: manipulation; }
 
 /* рисунки упражнений: белая «табличка», как на тренажёре, в обеих темах */
 .thumb { flex: none; width: 64px; height: 48px; object-fit: contain; background: var(--placard); border: 1px solid var(--line); border-radius: 8px; }
-.thumb.none { display: block; background: var(--paper); }
+.nopic.small { width: 64px; height: 48px; }
+.hbtn .nopic.small { width: 52px; height: 40px; }
 .thumbbtn { flex: none; padding: 0; border: 0; background: transparent; }
 .linkbtn { min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .ex-note { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--ink-soft); font-size: 14px; overflow-wrap: anywhere; }
@@ -406,6 +407,19 @@ button { cursor: pointer; touch-action: manipulation; }
 .tips { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 15px; }
 .note-text { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--ink-soft); overflow-wrap: anywhere; }
 .credit { margin: 0; color: var(--muted); font-size: 12px; }
+.placard.one { grid-template-columns: 1fr; }
+.placard.one img { height: 220px; }
+.nophoto { margin: 0; padding: 18px 14px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
+.nopic { display: grid; place-items: center; width: 76px; height: 56px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.photo-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.photo-grid .muted { grid-column: 1 / -1; }
+.photo-cell { position: relative; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: var(--placard); border: 1px solid var(--line); }
+.photo-cell img { width: 100%; height: 100%; object-fit: cover; }
+.photo-rm { position: absolute; top: 4px; right: 4px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: rgba(14, 20, 36, .7); color: #ffffff; font-size: 15px; }
+select.field { appearance: none; -webkit-appearance: none; }
+select.field:disabled { opacity: .6; }
+.hbtn { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; padding: 4px 0; border: 0; background: transparent; text-align: left; font-size: 14px; }
+.hbtn .thumb { width: 52px; height: 40px; }
 .back { justify-self: start; }
 .iconbtn {
   min-width: 40px; height: 36px; padding: 0 10px;

@@ -100,12 +100,62 @@ async function idbSet(key, val) {
     tx.onabort = () => reject(tx.error);
   });
 }
+async function idbDel(key) {
+  idb = idb || await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbPrefix(prefix) {
+  idb = idb || await idbOpen();
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const q = idb.transaction(IDB_STORE).objectStore(IDB_STORE).openCursor(IDBKeyRange.bound(prefix, prefix + '￿'));
+    q.onsuccess = () => { const c = q.result; if (c) { out.push([c.key, c.value]); c.continue(); } else resolve(out); };
+    q.onerror = () => reject(q.error);
+  });
+}
+
+/* Свои фото упражнений лежат отдельно от записей (ключи ph:<id>), чтобы каждое
+   сохранение записей не перегонялось вместе с картинками. */
+const photoCache = new Map();
+async function loadPhotos() {
+  try { (await idbPrefix('ph:')).forEach(([k, v]) => { if (typeof v === 'string') photoCache.set(k.slice(3), v); }); } catch (e) { /* без фото */ }
+}
+function fileToJpeg(file, max) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      const g = c.getContext('2d');
+      g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
+    img.src = url;
+  });
+}
+async function storePhoto(dataUrl, id) {
+  const pid = id || newId();
+  await idbSet('ph:' + pid, dataUrl);
+  photoCache.set(pid, dataUrl);
+  return pid;
+}
+function dropPhoto(id) { photoCache.delete(id); idbDel('ph:' + id).catch(() => {}); }
 
 function emptyState() {
   return {
     version: 2,
     tasks: {}, notes: {},
-    gym: { days: [], workouts: {}, active: null },
+    gym: { days: [], workouts: {}, active: null, custom: {}, overrides: {} },
     meta: { createdAt: Date.now(), lastBackup: 0 },
   };
 }
@@ -127,6 +177,15 @@ function normalizeState(v) {
   s.gym.days = Array.isArray(g.days) ? g.days.filter((d) => d && typeof d === 'object').map(normDay) : [];
   s.gym.workouts = obj(g.workouts);
   s.gym.active = g.active && typeof g.active === 'object' && Array.isArray(g.active.items) ? g.active : null;
+  const strs = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string') : []);
+  Object.keys(obj(g.custom)).forEach((id) => {
+    const c = g.custom[id];
+    if (c && typeof c.name === 'string' && c.name.trim()) s.gym.custom[id] = { id, name: c.name, group: String(c.group || 'Мои упражнения'), tips: strs(c.tips), photos: strs(c.photos), createdAt: Number(c.createdAt) || 0 };
+  });
+  Object.keys(obj(g.overrides)).forEach((id) => {
+    const o = g.overrides[id];
+    if (o && typeof o === 'object') s.gym.overrides[id] = { name: typeof o.name === 'string' ? o.name : '', tips: strs(o.tips), photos: strs(o.photos) };
+  });
   s.meta = Object.assign(s.meta, obj(v.meta));
   return s;
 }
@@ -161,6 +220,7 @@ async function load() {
     useLocal = true;
     try { const t = localStorage.getItem('dnevnik.state'); if (t) S = normalizeState(JSON.parse(t)); } catch (e2) { /* пусто */ }
   }
+  if (!useLocal) await loadPhotos();
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && saveTimer) flush(); });
 window.addEventListener('pagehide', () => { if (saveTimer) flush(); });
@@ -632,21 +692,54 @@ $('#addForm').addEventListener('submit', (e) => {
 /* ================= ЗАЛ ================= */
 const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е');
 
-/* каталог упражнений (exercises.js): узнаём упражнение по названию или по словам, которыми его называют */
+/* Каталог = встроенные упражнения (exercises.js) + твои правки к ним (overrides)
+   + твои собственные упражнения (custom). Упражнение узнаётся по названию,
+   по прежнему названию или по словам, которыми его называют (also). */
 const CAT = Array.isArray(window.EXERCISES) ? window.EXERCISES : [];
-const CAT_GROUPS = Array.isArray(window.EXERCISE_GROUPS) ? window.EXERCISE_GROUPS : [];
-const catIndex = new Map();
-CAT.forEach((e) => catIndex.set(normName(e.name), e));
-CAT.forEach((e) => (e.also || []).forEach((a) => { if (!catIndex.has(normName(a))) catIndex.set(normName(a), e); }));
-const findEx = (name) => catIndex.get(normName(name)) || null;
-const exImgs = (e) => (e && e.img ? ['ex/' + e.img[0] + '-1.' + e.img[1], 'ex/' + e.img[0] + '-2.' + e.img[1]] : []);
+const MY_GROUP = 'Мои упражнения';
+const CAT_GROUPS = (Array.isArray(window.EXERCISE_GROUPS) ? window.EXERCISE_GROUPS : []).concat([MY_GROUP]);
+let ALL = [], allIndex = new Map();
+function rebuildCatalog() {
+  const ov = S.gym.overrides || {}, cu = S.gym.custom || {};
+  ALL = CAT.map((e) => {
+    const o = ov[e.id] || {};
+    return {
+      key: e.id, kind: 'cat', name: (o.name && o.name.trim()) || e.name, origName: e.name, group: e.group,
+      tips: o.tips && o.tips.length ? o.tips : e.tips, photos: o.photos || [], img: e.img, also: e.also || [],
+    };
+  });
+  Object.keys(cu).forEach((id) => {
+    const c = cu[id];
+    ALL.push({ key: id, kind: 'custom', name: c.name, origName: '', group: CAT_GROUPS.includes(c.group) ? c.group : MY_GROUP, tips: c.tips || [], photos: c.photos || [], img: null, also: [] });
+  });
+  allIndex = new Map();
+  ALL.forEach((e) => allIndex.set(normName(e.name), e));
+  ALL.forEach((e) => [e.origName].concat(e.also).forEach((a) => { if (a && !allIndex.has(normName(a))) allIndex.set(normName(a), e); }));
+}
+const findEx = (name) => allIndex.get(normName(name)) || null;
+function exImgs(e) {
+  if (!e) return [];
+  const own = e.photos.map((id) => photoCache.get(id)).filter(Boolean);
+  if (own.length) return own;
+  return e.img ? ['ex/' + e.img[0] + '-1.' + e.img[1], 'ex/' + e.img[0] + '-2.' + e.img[1]] : [];
+}
+const usesCatalogArt = (e) => e && e.kind === 'cat' && e.img && !e.photos.some((id) => photoCache.has(id));
 function thumbEl(name) {
-  const e = findEx(name);
-  if (!e) return null;
+  const src = exImgs(findEx(name))[0];
+  if (!src) return null;
   const im = el('img', 'thumb');
-  im.src = exImgs(e)[0]; im.alt = ''; im.loading = 'lazy';
+  im.src = src; im.alt = ''; im.loading = 'lazy';
   return im;
 }
+/* новое название упражнения расходится везде: программа, текущая и прошлые тренировки */
+function renameEverywhere(oldName, newName) {
+  const n = normName(oldName);
+  if (!n || n === normName(newName)) return;
+  S.gym.days.forEach((d) => d.exercises.forEach((e) => { if (normName(e.name) === n) e.name = newName; }));
+  if (S.gym.active) S.gym.active.items.forEach((it) => { if (normName(it.name) === n) it.name = newName; });
+  Object.keys(S.gym.workouts).forEach((id) => (S.gym.workouts[id].items || []).forEach((it) => { if (normName(it.name) === n) it.name = newName; }));
+}
+
 function exerciseSheet(name, note, back) {
   const e = findEx(name);
   openSheet(null, (p) => {
@@ -654,50 +747,187 @@ function exerciseSheet(name, note, back) {
     p.append(el('h3', 'sheet-h', e ? e.name : name));
     if (e && normName(e.name) !== normName(name)) p.append(el('p', 'muted', 'У тебя записано: «' + name + '»'));
     if (e) {
-      const pics = el('div', 'placard');
-      exImgs(e).forEach((src, i) => { const im = el('img'); im.src = src; im.alt = e.name + ', положение ' + (i + 1); pics.append(im); });
-      p.append(pics, el('span', 'lbl', e.group));
-      const ul = el('ul', 'tips');
-      e.tips.forEach((t) => ul.append(el('li', null, t)));
-      p.append(ul);
+      const imgs = exImgs(e);
+      if (imgs.length) {
+        const pics = el('div', 'placard' + (imgs.length === 1 ? ' one' : ''));
+        imgs.forEach((src, i) => { const im = el('img'); im.src = src; im.alt = e.name + ', картинка ' + (i + 1); pics.append(im); });
+        p.append(pics);
+      } else {
+        p.append(el('p', 'nophoto', 'Рисунка пока нет. Нажми «Изменить» ниже и добавь своё фото с камеры или из галереи.'));
+      }
+      p.append(el('span', 'lbl', e.group));
+      if (e.tips.length) { const ul = el('ul', 'tips'); e.tips.forEach((t) => ul.append(el('li', null, t))); p.append(ul); }
     } else {
-      p.append(el('p', 'muted', 'Этого упражнения нет в каталоге. Если выбрать похожее из каталога, появятся рисунок и подсказки по технике.'));
+      p.append(el('p', 'muted', 'Этого упражнения нет в каталоге, поэтому нет и фото. Найди такое же в каталоге или создай своё: с названием, фото и подсказками.'));
     }
     if (note && note.trim()) p.append(el('span', 'lbl', 'Твой комментарий'), el('p', 'note-text', note));
-    if (e) p.append(el('p', 'credit', 'Рисунки: Everkinetic, CC BY-SA 4.0'));
+    if (e) {
+      p.append(btn('sheet-btn', 'Изменить: название, фото, техника', () => editExerciseSheet(e, '', (nn) => exerciseSheet(nn, note, back))));
+      if (usesCatalogArt(e)) p.append(el('p', 'credit', 'Рисунки: Everkinetic, CC BY-SA 4.0'));
+    } else {
+      p.append(btn('sheet-btn ok', 'Найти в каталоге', () => linkToCatalog(name, note)));
+      p.append(btn('sheet-btn', 'Создать своё упражнение с фото', () => editExerciseSheet(null, name, (nn) => exerciseSheet(nn, note))));
+    }
   }, 'Закрыть');
 }
-/* выбор упражнения из каталога; browse — просто посмотреть, без выбора */
-function pickExercise(onPick, browse) {
-  openSheet(browse ? 'Каталог упражнений' : 'Выбери упражнение', (p) => {
+/* упражнение записано своими словами: выбираешь его в каталоге, и оно везде переименовывается */
+function linkToCatalog(name, note) {
+  pickExercise((chosen) => {
+    renameEverywhere(name, chosen);
+    save(); renderAll();
+    toast('Теперь это «' + chosen + '» везде: в программе и в истории');
+    exerciseSheet(chosen, note);
+  }, false, true);
+}
+
+/* создать своё упражнение или изменить любое: название, группа, фото, подсказки */
+function editExerciseSheet(entry, presetName, after) {
+  const isCat = !!entry && entry.kind === 'cat';
+  const startPhotos = entry ? entry.photos.filter((id) => photoCache.has(id)) : [];
+  const draft = startPhotos.slice();
+  const added = [];
+  let saved = false;
+  openSheet(null, (p) => {
+    p.append(el('h3', 'sheet-h', entry ? 'Изменить упражнение' : 'Своё упражнение'));
+    const nl = el('label', 'lbl', 'Название'); nl.htmlFor = 'exEdName';
+    const name = el('input', 'field');
+    name.type = 'text'; name.id = 'exEdName'; name.maxLength = 80; name.value = entry ? entry.name : (presetName || '');
+    name.placeholder = 'Например, пуловер в тренажёре';
+    const gl = el('label', 'lbl', 'Группа мышц'); gl.htmlFor = 'exEdGroup';
+    const group = el('select', 'field'); group.id = 'exEdGroup';
+    CAT_GROUPS.forEach((g) => { const o = el('option', null, g); o.value = g; group.append(o); });
+    group.value = entry ? entry.group : MY_GROUP;
+    group.disabled = isCat;
+    p.append(nl, name, gl, group, el('span', 'lbl', 'Фото'));
+    const pics = el('div', 'photo-grid');
+    const drawPics = () => {
+      pics.replaceChildren();
+      draft.forEach((id) => {
+        const cell = el('div', 'photo-cell');
+        const im = el('img'); im.src = photoCache.get(id); im.alt = 'Твоё фото';
+        const rm = btn('photo-rm', '✕', () => { draft.splice(draft.indexOf(id), 1); drawPics(); });
+        rm.setAttribute('aria-label', 'Убрать это фото');
+        cell.append(im, rm);
+        pics.append(cell);
+      });
+      if (!draft.length) pics.append(el('p', 'muted', isCat && entry.img ? 'Сейчас показываются рисунки из каталога. Добавишь своё фото — будет показано оно.' : 'Фото пока нет.'));
+    };
+    drawPics();
+    const fileLbl = el('label', 'ghost filebtn', 'Добавить фото: камера или галерея');
+    const file = el('input'); file.type = 'file'; file.accept = 'image/*'; file.multiple = true; file.id = 'exEdPhoto';
+    file.addEventListener('change', async () => {
+      const files = Array.from(file.files || []);
+      file.value = '';
+      for (const f of files) {
+        try { const id = await storePhoto(await fileToJpeg(f, 1000)); added.push(id); draft.push(id); }
+        catch (err) { toast('Не получилось добавить фото. Попробуй другое.'); }
+      }
+      drawPics();
+    });
+    fileLbl.append(file);
+    const tl = el('label', 'lbl', 'Техника: каждая подсказка с новой строки'); tl.htmlFor = 'exEdTips';
+    const tips = el('textarea', 'field'); tips.id = 'exEdTips'; tips.rows = 4;
+    tips.value = entry ? entry.tips.join('\n') : '';
+    tips.placeholder = 'Спина прямая\nЛокти вдоль корпуса';
+    p.append(pics, fileLbl, tl, tips);
+    p.append(btn('sheet-btn ok', 'Сохранить', () => {
+      const nm = name.value.trim().replace(/\s+/g, ' ');
+      if (!nm) { toast('Впиши название'); name.focus(); return; }
+      const clash = findEx(nm);
+      if (clash && (!entry || clash.key !== entry.key)) { toast('«' + clash.name + '» уже есть в каталоге, выбери другое название'); return; }
+      const tipList = tips.value.split('\n').map((t) => t.trim()).filter(Boolean);
+      const oldName = entry ? entry.name : presetName;
+      if (isCat) {
+        const base = CAT.find((c) => c.id === entry.key);
+        S.gym.overrides[entry.key] = { name: nm === base.name ? '' : nm, tips: tipList.join('\n') === base.tips.join('\n') ? [] : tipList, photos: draft.slice() };
+      } else if (entry) {
+        Object.assign(S.gym.custom[entry.key], { name: nm, group: group.value, tips: tipList, photos: draft.slice() });
+      } else {
+        const id = 'my' + newId();
+        S.gym.custom[id] = { id, name: nm, group: group.value, tips: tipList, photos: draft.slice(), createdAt: Date.now() };
+      }
+      startPhotos.filter((id) => !draft.includes(id)).forEach(dropPhoto);
+      if (oldName) renameEverywhere(oldName, nm);
+      saved = true;
+      rebuildCatalog(); save();
+      closeSheet(); renderAll();
+      toast('Сохранено');
+      if (after) after(nm);
+    }));
+    if (entry && !isCat) {
+      p.append(btn('sheet-btn danger', 'Удалить из каталога', () => {
+        const c = S.gym.custom[entry.key];
+        delete S.gym.custom[entry.key];
+        saved = true;
+        rebuildCatalog(); save(); closeSheet(); renderAll();
+        toast('«' + c.name + '» убрано из каталога', () => { S.gym.custom[entry.key] = c; rebuildCatalog(); save(); renderAll(); });
+      }));
+    }
+    if (isCat && S.gym.overrides[entry.key]) {
+      p.append(btn('sheet-btn', 'Вернуть как было в каталоге', () => {
+        const o = S.gym.overrides[entry.key], base = CAT.find((c) => c.id === entry.key);
+        delete S.gym.overrides[entry.key];
+        (o.photos || []).forEach(dropPhoto);
+        if (o.name) renameEverywhere(o.name, base.name);
+        saved = true;
+        rebuildCatalog(); save(); closeSheet(); renderAll();
+        toast('Вернул как было в каталоге');
+        if (after) after(base.name);
+      }));
+    }
+  });
+  sheetOnClose = () => { if (!saved) added.forEach(dropPhoto); };
+}
+
+/* выбор упражнения из каталога; browse — просто посмотреть; link — привязать своё название */
+function pickExercise(onPick, browse, link) {
+  openSheet(browse ? 'Каталог упражнений' : link ? 'Какое это упражнение?' : 'Выбери упражнение', (p) => {
     const search = el('input', 'field');
     search.type = 'search'; search.id = 'catSearch'; search.placeholder = 'Поиск: жим, тяга, присед…';
     search.setAttribute('aria-label', 'Поиск упражнения');
     const list = el('div', 'catlist');
-    const reopen = () => pickExercise(onPick, browse);
+    const reopen = () => pickExercise(onPick, browse, link);
+    const own = btn('ghost', '+ Своё упражнение с фото', () => editExerciseSheet(null, search.value.trim(), (nn) => { if (browse) reopen(); else onPick(nn); }));
     const draw = () => {
       const q = normName(search.value);
       list.replaceChildren();
       CAT_GROUPS.forEach((g) => {
-        const items = CAT.filter((e) => e.group === g && (!q || normName(e.name).includes(q) || (e.also || []).some((a) => normName(a).includes(q))));
+        const items = ALL.filter((e) => e.group === g && (!q || normName(e.name).includes(q) || normName(e.origName).includes(q) || e.also.some((a) => normName(a).includes(q))));
         if (!items.length) return;
         list.append(el('span', 'lbl', g));
         items.forEach((e) => {
           const b = btn('catrow', null, () => { if (browse) exerciseSheet(e.name, '', reopen); else { closeSheet(); onPick(e.name); } });
-          const im = el('img'); im.src = exImgs(e)[0]; im.alt = ''; im.loading = 'lazy';
-          b.append(im, el('span', null, e.name));
+          const src = exImgs(e)[0];
+          if (src) { const im = el('img'); im.src = src; im.alt = ''; im.loading = 'lazy'; b.append(im); }
+          else b.append(el('span', 'nopic', 'нет фото'));
+          b.append(el('span', null, e.name));
           list.append(b);
         });
       });
-      if (!browse && search.value.trim()) {
-        list.append(btn('sheet-btn', 'Своё название: «' + search.value.trim() + '»', () => { closeSheet(); onPick(search.value.trim()); }));
+      if (!browse && !link && search.value.trim()) {
+        list.append(btn('sheet-btn', 'Своё название без фото: «' + search.value.trim() + '»', () => { closeSheet(); onPick(search.value.trim()); }));
       }
-      if (!list.children.length) list.append(el('p', 'muted', 'Ничего не нашлось. Попробуй другое слово.'));
+      if (!list.children.length) list.append(el('p', 'muted', 'Ничего не нашлось. Попробуй другое слово или создай своё упражнение.'));
     };
     search.addEventListener('input', draw);
-    p.append(search, list);
+    p.append(search, own, list);
     draw();
   }, browse ? 'Закрыть' : 'Отмена');
+}
+
+/* Поправка дней «Спина», которые пришли из файла 17.10: Илья уточнил упражнения.
+   Меняется только то, что осталось ровно как было в файле. */
+const IMPORT_FIXES = [
+  ['Сгибание рук в тренажёре Скотта', 'тяга снизу вверх', 'Пуловер в тренажёре', 'Сидя, локти на подушках, руки держат рукоять сверху, тянешь вниз до живота.'],
+  ['Тяга штанги в наклоне', '5/15/20', 'Тяга верхнего блока стоя', 'Стоя у блока со сменными рукоятками, чуть наклонившись, тянешь вниз к груди. Записано «5/15/20»: понял как 5 подходов по 15 повторов, 20 кг.'],
+  ['Тяга в тренажёре', 'Какой это тренажёр', 'Тяга к поясу в тренажёре сидя', 'Сидя, двумя руками за рукояти, тянешь к себе.'],
+];
+function fixImported() {
+  let n = 0;
+  S.gym.days.forEach((d) => d.exercises.forEach((e) => IMPORT_FIXES.forEach(([from, mark, to, note]) => {
+    if (e.name === from && String(e.note || '').includes(mark)) { e.name = to; e.note = note; n++; }
+  })));
+  if (n) save();
 }
 const num = (v) => { const x = parseFloat(String(v).replace(',', '.')); return Number.isFinite(x) ? x : NaN; };
 const fmtKg = (x) => String(Math.round(x * 100) / 100).replace('.', ',');
@@ -724,7 +954,7 @@ function lastSetsFor(name, excludeId) {
 }
 function knownExerciseNames() {
   const seen = new Map();
-  CAT.forEach((e) => seen.set(normName(e.name), e.name));
+  ALL.forEach((e) => seen.set(normName(e.name), e.name));
   S.gym.days.forEach((d) => d.exercises.forEach((e) => { if (e.name.trim() && !seen.has(normName(e.name))) seen.set(normName(e.name), e.name.trim()); }));
   finishedWorkouts().forEach((w) => w.items.forEach((i) => { if (!seen.has(normName(i.name))) seen.set(normName(i.name), i.name); }));
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'ru'));
@@ -1031,7 +1261,7 @@ function dayCard(d) {
     const mid = el('span', 'pday-mid');
     mid.append(el('span', 'pday-name', e.name));
     if (e.note && e.note.trim()) mid.append(el('span', 'pday-note', e.note));
-    row.append(th || el('span', 'thumb none'), mid, el('span', 'pill', planText(e) || '—'));
+    row.append(th || el('span', 'nopic small', 'нет фото'), mid, el('span', 'pill', planText(e) || '—'));
     c.append(row);
   });
   if (list.length) c.append(data(btn('primary', 'Начать эту тренировку'), { a: 'start', day: d.id }));
@@ -1154,7 +1384,14 @@ function exerciseDetail(box, e) {
   back.style.justifySelf = 'start';
   box.append(back);
   const c = el('div', 'card');
-  c.append(el('h2', null, e.name));
+  const ph = el('div', 'ex-head');
+  const pth = thumbEl(e.name);
+  if (pth) ph.append(pth);
+  const pt = el('div', 'stack');
+  pt.style.gap = '4px';
+  pt.append(el('h2', null, e.name), data(btn('linkbtn', 'Как делать, фото'), { a: 'prog-info', name: e.name }));
+  ph.append(pt);
+  c.append(ph);
   const metrics = e.bw ? [['r', 'Повторы']] : [['w', 'Рабочий вес'], ['e', '1ПМ (расчёт)'], ['r', 'Повторы']];
   if (!metrics.some((m) => m[0] === ui.progressMetric)) ui.progressMetric = metrics[0][0];
   if (metrics.length > 1) {
@@ -1237,9 +1474,12 @@ function historyView(box) {
     if (open) {
       const det = el('div', 'hdetail');
       w.items.forEach((it) => {
-        const p = el('div', 'hitem');
-        p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.length ? it.sets.map(setStr).join(', ') : 'подходы не записаны'));
-        if (it.note) p.append(el('span', 'pday-note', ' · ' + it.note));
+        const p = data(btn('hitem hbtn'), { a: 'hist-ex', name: it.name, note: it.note || '' });
+        const th = thumbEl(it.name);
+        const txt = el('span');
+        txt.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.length ? it.sets.map(setStr).join(', ') : 'подходы не записаны'));
+        if (it.note) txt.append(el('span', 'pday-note', ' · ' + it.note));
+        p.append(th || el('span', 'nopic small', 'нет фото'), txt);
         det.append(p);
       });
       if (w.note) det.append(el('p', 'muted', w.note));
@@ -1350,6 +1590,8 @@ $('#gymBody').addEventListener('click', async (e) => {
   else if (a === 'metric') { ui.progressMetric = t.dataset.m; renderGym(); }
   else if (a === 'hist-toggle') { ui.openWorkout = ui.openWorkout === t.dataset.id ? null : t.dataset.id; renderGym(); }
   else if (a === 'hist-edit') editWorkout(t.dataset.id);
+  else if (a === 'hist-ex') exerciseSheet(t.dataset.name, t.dataset.note);
+  else if (a === 'prog-info') exerciseSheet(t.dataset.name);
   else if (a === 'hist-del') {
     const id = t.dataset.id, w = S.gym.workouts[id];
     if (!w || !(await confirmSheet('Удалить тренировку ' + shortDate(w.date) + '?', 'Удалить', true))) return;
@@ -1379,7 +1621,12 @@ function renderBackup() {
 function markBackup() { S.meta.lastBackup = Date.now(); save(); renderBackup(); renderNudge(); toast('Копия сохранена'); }
 async function exportBackup() {
   await flush();
-  const text = JSON.stringify(Object.assign({ app: 'dnevnik', exportedAt: new Date().toISOString() }, S), null, 1);
+  const used = new Set();
+  Object.values(S.gym.custom).forEach((c) => c.photos.forEach((id) => used.add(id)));
+  Object.values(S.gym.overrides).forEach((o) => (o.photos || []).forEach((id) => used.add(id)));
+  const photos = {};
+  used.forEach((id) => { if (photoCache.has(id)) photos[id] = photoCache.get(id); });
+  const text = JSON.stringify(Object.assign({ app: 'dnevnik', exportedAt: new Date().toISOString() }, S, { photos }), null, 1);
   const name = 'dnevnik-' + dayKey(today()) + '.json';
   let file = null;
   try { file = new File([text], name, { type: 'application/json' }); } catch (e) { file = null; }
@@ -1420,6 +1667,7 @@ async function importText(text) {
         })),
       };
     });
+    fixImported();
     save(); renderAll();
     toast('Добавлено: ' + parts.join(', '));
     return;
@@ -1431,6 +1679,11 @@ async function importText(text) {
     const keepBackup = S.meta.lastBackup;
     S = normalizeState(j);
     S.meta.lastBackup = Math.max(keepBackup || 0, S.meta.lastBackup || 0);
+    const photos = obj(j.photos);
+    for (const id of Object.keys(photos)) {
+      if (typeof photos[id] === 'string' && photos[id].startsWith('data:image/')) { try { await storePhoto(photos[id], id); } catch (e) { /* без этого фото */ } }
+    }
+    rebuildCatalog();
     save(); rebuild(); renderAll();
     toast('Копия восстановлена: ' + Object.keys(S.tasks).length + ' дел, ' + Object.keys(S.gym.workouts).length + ' тренировок');
     return;
@@ -1491,6 +1744,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 load().then(() => {
+  rebuildCatalog();
+  fixImported();
   rebuild();
   renderInstallHint();
   renderAll();
