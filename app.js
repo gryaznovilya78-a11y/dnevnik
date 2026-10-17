@@ -109,17 +109,22 @@ function emptyState() {
     meta: { createdAt: Date.now(), lastBackup: 0 },
   };
 }
+function normDay(d) {
+  return {
+    id: String(d.id || newId()), name: String(d.name || 'Тренировка'), note: String(d.note || ''),
+    exercises: Array.isArray(d.exercises) ? d.exercises.filter((e) => e && typeof e === 'object').map((e) => ({
+      id: String(e.id || newId()), name: String(e.name || ''), sets: String(e.sets ?? ''), reps: String(e.reps ?? ''),
+      weight: String(e.weight ?? ''), note: String(e.note || ''),
+    })) : [],
+  };
+}
+function validWorkout(w) { return w && typeof w === 'object' && typeof w.date === 'string' && Array.isArray(w.items); }
 function normalizeState(v) {
   const s = emptyState();
   s.tasks = obj(v.tasks);
   s.notes = obj(v.notes);
   const g = obj(v.gym);
-  s.gym.days = Array.isArray(g.days) ? g.days.filter((d) => d && typeof d === 'object').map((d) => ({
-    id: String(d.id || newId()), name: String(d.name || 'Тренировка'),
-    exercises: Array.isArray(d.exercises) ? d.exercises.filter((e) => e && typeof e === 'object').map((e) => ({
-      id: String(e.id || newId()), name: String(e.name || ''), sets: String(e.sets ?? ''), reps: String(e.reps ?? ''),
-    })) : [],
-  })) : [];
+  s.gym.days = Array.isArray(g.days) ? g.days.filter((d) => d && typeof d === 'object').map(normDay) : [];
   s.gym.workouts = obj(g.workouts);
   s.gym.active = g.active && typeof g.active === 'object' && Array.isArray(g.active.items) ? g.active : null;
   s.meta = Object.assign(s.meta, obj(v.meta));
@@ -189,12 +194,13 @@ function toast(msg, undo) {
 }
 
 let sheetOnClose = null;
-function openSheet(title, build) {
+function openSheet(title, build, closeLabel) {
   const ov = $('#overlay'), panel = $('#sheetPanel');
   panel.replaceChildren();
   if (title) panel.append(el('p', 'sheet-title', title));
   build(panel);
-  panel.append(btn('sheet-btn cancel', 'Отмена', closeSheet));
+  panel.append(btn('sheet-btn cancel', closeLabel || 'Отмена', closeSheet));
+  panel.scrollTop = 0;
   ov.hidden = false;
 }
 function closeSheet() {
@@ -624,7 +630,75 @@ $('#addForm').addEventListener('submit', (e) => {
 });
 
 /* ================= ЗАЛ ================= */
-const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const normName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е');
+
+/* каталог упражнений (exercises.js): узнаём упражнение по названию или по словам, которыми его называют */
+const CAT = Array.isArray(window.EXERCISES) ? window.EXERCISES : [];
+const CAT_GROUPS = Array.isArray(window.EXERCISE_GROUPS) ? window.EXERCISE_GROUPS : [];
+const catIndex = new Map();
+CAT.forEach((e) => catIndex.set(normName(e.name), e));
+CAT.forEach((e) => (e.also || []).forEach((a) => { if (!catIndex.has(normName(a))) catIndex.set(normName(a), e); }));
+const findEx = (name) => catIndex.get(normName(name)) || null;
+const exImgs = (e) => (e && e.img ? ['ex/' + e.img[0] + '-1.' + e.img[1], 'ex/' + e.img[0] + '-2.' + e.img[1]] : []);
+function thumbEl(name) {
+  const e = findEx(name);
+  if (!e) return null;
+  const im = el('img', 'thumb');
+  im.src = exImgs(e)[0]; im.alt = ''; im.loading = 'lazy';
+  return im;
+}
+function exerciseSheet(name, note, back) {
+  const e = findEx(name);
+  openSheet(null, (p) => {
+    if (back) p.append(btn('quickbtn back', '‹ Каталог', back));
+    p.append(el('h3', 'sheet-h', e ? e.name : name));
+    if (e && normName(e.name) !== normName(name)) p.append(el('p', 'muted', 'У тебя записано: «' + name + '»'));
+    if (e) {
+      const pics = el('div', 'placard');
+      exImgs(e).forEach((src, i) => { const im = el('img'); im.src = src; im.alt = e.name + ', положение ' + (i + 1); pics.append(im); });
+      p.append(pics, el('span', 'lbl', e.group));
+      const ul = el('ul', 'tips');
+      e.tips.forEach((t) => ul.append(el('li', null, t)));
+      p.append(ul);
+    } else {
+      p.append(el('p', 'muted', 'Этого упражнения нет в каталоге. Если выбрать похожее из каталога, появятся рисунок и подсказки по технике.'));
+    }
+    if (note && note.trim()) p.append(el('span', 'lbl', 'Твой комментарий'), el('p', 'note-text', note));
+    if (e) p.append(el('p', 'credit', 'Рисунки: Everkinetic, CC BY-SA 4.0'));
+  }, 'Закрыть');
+}
+/* выбор упражнения из каталога; browse — просто посмотреть, без выбора */
+function pickExercise(onPick, browse) {
+  openSheet(browse ? 'Каталог упражнений' : 'Выбери упражнение', (p) => {
+    const search = el('input', 'field');
+    search.type = 'search'; search.id = 'catSearch'; search.placeholder = 'Поиск: жим, тяга, присед…';
+    search.setAttribute('aria-label', 'Поиск упражнения');
+    const list = el('div', 'catlist');
+    const reopen = () => pickExercise(onPick, browse);
+    const draw = () => {
+      const q = normName(search.value);
+      list.replaceChildren();
+      CAT_GROUPS.forEach((g) => {
+        const items = CAT.filter((e) => e.group === g && (!q || normName(e.name).includes(q) || (e.also || []).some((a) => normName(a).includes(q))));
+        if (!items.length) return;
+        list.append(el('span', 'lbl', g));
+        items.forEach((e) => {
+          const b = btn('catrow', null, () => { if (browse) exerciseSheet(e.name, '', reopen); else { closeSheet(); onPick(e.name); } });
+          const im = el('img'); im.src = exImgs(e)[0]; im.alt = ''; im.loading = 'lazy';
+          b.append(im, el('span', null, e.name));
+          list.append(b);
+        });
+      });
+      if (!browse && search.value.trim()) {
+        list.append(btn('sheet-btn', 'Своё название: «' + search.value.trim() + '»', () => { closeSheet(); onPick(search.value.trim()); }));
+      }
+      if (!list.children.length) list.append(el('p', 'muted', 'Ничего не нашлось. Попробуй другое слово.'));
+    };
+    search.addEventListener('input', draw);
+    p.append(search, list);
+    draw();
+  }, browse ? 'Закрыть' : 'Отмена');
+}
 const num = (v) => { const x = parseFloat(String(v).replace(',', '.')); return Number.isFinite(x) ? x : NaN; };
 const fmtKg = (x) => String(Math.round(x * 100) / 100).replace('.', ',');
 const e1rm = (w, r) => (r <= 1 ? w : w * (1 + r / 30));
@@ -650,7 +724,8 @@ function lastSetsFor(name, excludeId) {
 }
 function knownExerciseNames() {
   const seen = new Map();
-  S.gym.days.forEach((d) => d.exercises.forEach((e) => { if (e.name.trim()) seen.set(normName(e.name), e.name.trim()); }));
+  CAT.forEach((e) => seen.set(normName(e.name), e.name));
+  S.gym.days.forEach((d) => d.exercises.forEach((e) => { if (e.name.trim() && !seen.has(normName(e.name))) seen.set(normName(e.name), e.name.trim()); }));
   finishedWorkouts().forEach((w) => w.items.forEach((i) => { if (!seen.has(normName(i.name))) seen.set(normName(i.name), i.name); }));
   return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'ru'));
 }
@@ -663,11 +738,22 @@ function targetText(sets, reps) {
   return r || (s ? s + ' подх.' : '');
 }
 function targetReps(target) { const m = String(target || '').match(/[×x*]\s*(\d+)\s*$/i); return m ? m[1] : ''; }
-function makeItem(name, sets, reps) {
+/* Упражнение для тренировки: подходы, повторы и вес сразу вписаны из программы
+   (вес — из программы или из прошлого раза), остаётся отмечать галочкой. */
+function makeItem(plan) {
+  const name = String(plan.name).trim();
   const prev = lastSetsFor(name);
-  const n = Math.max(1, Math.min(12, parseInt(sets, 10) || (prev ? prev.sets.length : 3)));
-  return { id: newId(), name: String(name).trim(), target: targetText(sets, reps), rows: Array.from({ length: n }, () => ({ w: '', r: '', done: false })) };
+  const n = Math.max(1, Math.min(12, parseInt(plan.sets, 10) || (prev ? prev.sets.length : 3)));
+  const target = targetText(plan.sets, plan.reps);
+  const tr = targetReps(target);
+  const pw = String(plan.weight || '').trim().replace('.', ',');
+  const rows = Array.from({ length: n }, (_, j) => {
+    const ps = prev ? (prev.sets[j] || prev.sets[prev.sets.length - 1]) : null;
+    return { w: pw || (ps && ps.w ? fmtKg(ps.w) : ''), r: tr || (ps ? String(ps.r) : ''), done: false };
+  });
+  return { id: newId(), name, target, note: String(plan.note || ''), rows };
 }
+const planFor = (name) => S.gym.days.flatMap((d) => d.exercises).find((e) => e.name.trim() && normName(e.name) === normName(name));
 /* Подсказка для подхода: сперва предыдущий подход этой же тренировки,
    потом тот же подход прошлой тренировки; повторы — из плана. */
 function placeholderFor(it, j, prev) {
@@ -688,8 +774,10 @@ function suggestNextDay() {
 }
 
 function startWorkout(day) {
-  const items = day ? day.exercises.filter((e) => e.name.trim()).map((e) => makeItem(e.name, e.sets, e.reps)) : [];
+  if (S.gym.active) { ui.gymView = 'workout'; rememberUi(); renderGym(); toast('Сначала заверши или отмени текущую тренировку'); return; }
+  const items = day ? day.exercises.filter((e) => e.name.trim()).map(makeItem) : [];
   S.gym.active = { id: newId(), date: dayKey(today()), dayId: day ? day.id : null, title: day ? day.name : 'Тренировка', startedAt: Date.now(), lastSetAt: 0, note: '', isEdit: false, items };
+  ui.gymView = 'workout'; rememberUi();
   save(); renderGym();
   window.scrollTo(0, 0);
 }
@@ -700,7 +788,7 @@ function editWorkout(id) {
   S.gym.active = {
     id, date: w.date, dayId: w.dayId || null, title: w.title || 'Тренировка', startedAt: w.startedAt || Date.now(), finishedAt: w.finishedAt,
     lastSetAt: 0, note: w.note || '', isEdit: true,
-    items: w.items.map((it) => ({ id: newId(), name: it.name, target: it.target || '', rows: it.sets.map((s) => ({ w: s.w ? fmtKg(s.w) : '', r: String(s.r), done: true })) })),
+    items: w.items.map((it) => ({ id: newId(), name: it.name, target: it.target || '', note: it.note || '', rows: it.sets.length ? it.sets.map((s) => ({ w: s.w ? fmtKg(s.w) : '', r: String(s.r), done: true })) : [{ w: '', r: '', done: false }] })),
   };
   ui.gymView = 'workout'; rememberUi();
   save(); renderGym();
@@ -725,7 +813,7 @@ async function finishWorkout() {
   const a = S.gym.active;
   if (!a) return;
   const items = a.items.map((it) => ({
-    name: it.name, target: it.target || '',
+    name: it.name, target: it.target || '', note: it.note || '',
     sets: it.rows.filter((r) => r.done).map((r) => ({ w: String(r.w).trim() ? num(r.w) || 0 : 0, r: parseInt(r.r, 10) || 0 })).filter((s) => s.r > 0),
   })).filter((it) => it.sets.length);
   if (!items.length) {
@@ -734,8 +822,9 @@ async function finishWorkout() {
     S.gym.active = null; save(); renderGym();
     return;
   }
-  const loose = a.items.reduce((n, it) => n + it.rows.filter((r) => !r.done && (String(r.w).trim() || String(r.r).trim())).length, 0);
-  if (loose && !(await confirmSheet(loose + ' ' + plural(loose, ['подход', 'подхода', 'подходов']) + ' с цифрами, но без галочки, не попадут в запись. Завершить?', 'Завершить'))) return;
+  const total = a.items.reduce((n, it) => n + it.rows.length, 0);
+  const ticked = a.items.reduce((n, it) => n + it.rows.filter((r) => r.done).length, 0);
+  if (ticked < total && !(await confirmSheet('Отмечено ' + ticked + ' из ' + total + ' ' + plural(total, ['подхода', 'подходов', 'подходов']) + '. Подходы без галочки не попадут в запись. Завершить?', 'Завершить'))) return;
   S.gym.workouts[a.id] = { date: a.date, dayId: a.dayId, title: a.title, startedAt: a.startedAt, finishedAt: a.isEdit && a.finishedAt ? a.finishedAt : Date.now(), note: (a.note || '').trim(), items };
   S.gym.active = null;
   save();
@@ -754,6 +843,7 @@ function itemSheet(i) {
   const a = S.gym.active, it = a && a.items[i];
   if (!it) return;
   openSheet(it.name, (p) => {
+    p.append(sheetBtn('Как делать', () => exerciseSheet(it.name, it.note)));
     if (i > 0) p.append(sheetBtn('Поднять выше', () => { a.items.splice(i - 1, 0, a.items.splice(i, 1)[0]); save(); renderGym(); }));
     if (i < a.items.length - 1) p.append(sheetBtn('Опустить ниже', () => { a.items.splice(i + 1, 0, a.items.splice(i, 1)[0]); save(); renderGym(); }));
     p.append(sheetBtn('Убрать упражнение', () => {
@@ -795,7 +885,7 @@ function workoutView(box) {
   ain.setAttribute('aria-label', 'Название упражнения');
   ain.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addExercise(); } });
   arow.append(ain, data(btn('primary', '+'), { a: 'add-ex' }));
-  add.append(arow);
+  add.append(arow, data(btn('ghost', 'Выбрать из каталога с картинками'), { a: 'pick-ex' }));
   box.append(add);
 
   const noteCard = el('div', 'card');
@@ -816,14 +906,25 @@ function itemCard(it, i, a) {
   const prev = lastSetsFor(it.name, a.id);
   const card = el('div', 'card');
   const head = el('div', 'ex-head');
+  const thumb = thumbEl(it.name);
+  if (thumb) {
+    const tb = data(btn('thumbbtn'), { a: 'ex-info', i });
+    tb.setAttribute('aria-label', 'Как делать: ' + it.name);
+    tb.append(thumb);
+    head.append(tb);
+  }
   const title = el('div', 'stack');
   title.style.gap = '4px';
   const h = el('h3', null, it.name);
   title.append(h);
-  if (it.target) title.append(el('span', 'pill', 'план ' + it.target));
+  const tags = el('div', 'row');
+  if (it.target) tags.append(el('span', 'pill', 'план ' + it.target));
+  tags.append(data(btn('linkbtn', 'Как делать'), { a: 'ex-info', i }));
+  title.append(tags);
   head.append(title, data(btn('more', '⋯'), { a: 'item-menu', i }));
   head.lastChild.setAttribute('aria-label', 'Действия с упражнением');
   card.append(head);
+  if (it.note && it.note.trim()) card.append(el('p', 'ex-note', it.note));
   card.append(el('p', 'ex-prev', prev
     ? 'Прошлый раз, ' + shortDate(prev.date) + ': ' + prev.sets.map(setStr).join(', ')
     : 'Раньше не делал: сравнивать пока не с чем'));
@@ -858,6 +959,7 @@ function startView(box) {
   const days = S.gym.days.filter((d) => d.exercises.some((e) => e.name.trim()));
   const card = el('div', 'card');
   card.append(el('h2', null, 'Начать тренировку'));
+  if (days.length) card.append(el('p', 'muted', 'Выбери день программы: упражнения, подходы, повторы и веса подставятся сами, останется отмечать подходы галочкой.'));
   if (days.length) {
     days.forEach((d) => {
       const b = data(btn('daybtn' + (next && next.id === d.id ? ' next' : '')), { a: 'start', day: d.id });
@@ -878,7 +980,7 @@ function startView(box) {
     lc.append(el('h3', null, (last.title || 'Тренировка') + ' · ' + shortDate(last.date)));
     last.items.forEach((it) => {
       const p = el('div', 'hitem');
-      p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.map(setStr).join(', ')));
+      p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.length ? it.sets.map(setStr).join(', ') : 'подходы не записаны'));
       lc.append(p);
     });
     box.append(lc);
@@ -898,10 +1000,11 @@ function updateTimers() {
 setInterval(() => { if (ui.tab === 'gym' && ui.gymView === 'workout' && !document.hidden) updateTimers(); }, 1000);
 
 function programView(box) {
+  box.append(data(btn('ghost', 'Каталог упражнений с картинками'), { a: 'catalog' }));
   if (!S.gym.days.length) {
     const c = el('div', 'card');
     c.append(el('h2', null, 'Программы пока нет'));
-    c.append(el('p', 'muted', 'Запиши тренировочные дни: например, «Тренировка А» с приседом 3×5 и жимом 3×5. Подходы и повторы из программы станут подсказками на тренировке.'));
+    c.append(el('p', 'muted', 'Запиши тренировочные дни: например, «Спина» с тягой верхнего блока 3×12. Упражнения удобно выбирать из каталога: там правильные названия, рисунки и техника.'));
     c.append(data(btn('primary', '+ Тренировочный день'), { a: 'add-day' }));
     box.append(c);
     return;
@@ -909,18 +1012,29 @@ function programView(box) {
   S.gym.days.forEach((d) => box.append(ui.editDay === d.id ? dayEditor(d) : dayCard(d)));
   box.append(data(btn('ghost', '+ Тренировочный день'), { a: 'add-day' }));
 }
+function planText(e) {
+  const t = targetText(e.sets, e.reps);
+  const w = String(e.weight || '').trim();
+  return [t, w ? w.replace('.', ',') + ' кг' : ''].filter(Boolean).join(' · ');
+}
 function dayCard(d) {
   const c = el('div', 'card');
   const head = el('div', 'row between');
   head.append(el('h2', null, d.name), data(btn('quickbtn', 'Изменить'), { a: 'edit-day', day: d.id }));
   c.append(head);
+  if (d.note && d.note.trim()) c.append(el('p', 'ex-note', d.note));
   const list = d.exercises.filter((e) => e.name.trim());
   if (!list.length) c.append(el('p', 'muted', 'Упражнений пока нет.'));
   list.forEach((e) => {
-    const row = el('div', 'pday-ex');
-    row.append(el('span', null, e.name), el('span', 'pill', targetText(e.sets, e.reps) || '—'));
+    const row = data(btn('pday-ex'), { a: 'pex-info', day: d.id, ex: e.id });
+    const th = thumbEl(e.name);
+    const mid = el('span', 'pday-mid');
+    mid.append(el('span', 'pday-name', e.name));
+    if (e.note && e.note.trim()) mid.append(el('span', 'pday-note', e.note));
+    row.append(th || el('span', 'thumb none'), mid, el('span', 'pill', planText(e) || '—'));
     c.append(row);
   });
+  if (list.length) c.append(data(btn('primary', 'Начать эту тренировку'), { a: 'start', day: d.id }));
   return c;
 }
 function dayEditor(d) {
@@ -928,28 +1042,44 @@ function dayEditor(d) {
   const nl = el('label', 'lbl', 'Название дня'); nl.htmlFor = 'dn-' + d.id;
   const name = el('input', 'field'); name.type = 'text'; name.id = 'dn-' + d.id; name.value = d.name; name.maxLength = 60;
   data(name, { a: 'day-name', day: d.id });
-  c.append(nl, name);
-  const hdr = el('div', 'ped-row');
-  hdr.style.borderTop = '0'; hdr.style.paddingBottom = '0';
-  hdr.append(el('span', 'lbl', 'Упражнение'), el('span', 'lbl', 'Подх.'), el('span', 'lbl', 'Повт.'));
-  c.append(hdr);
+  const dn = el('input', 'field'); dn.type = 'text'; dn.id = 'dnote-' + d.id; dn.value = d.note || ''; dn.maxLength = 300;
+  dn.placeholder = 'Разминка или заметка ко дню (необязательно)';
+  dn.setAttribute('aria-label', 'Заметка ко дню');
+  data(dn, { a: 'day-note', day: d.id });
+  c.append(nl, name, dn);
   d.exercises.forEach((e, k) => {
     const row = el('div', 'ped-row');
-    const en = el('input', 'field'); en.type = 'text'; en.value = e.name; en.placeholder = 'Упражнение'; en.setAttribute('list', 'exNames'); en.id = 'pe-' + e.id; en.maxLength = 80;
+    const en = el('input', 'field'); en.type = 'text'; en.value = e.name; en.placeholder = 'Упражнение ' + (k + 1); en.setAttribute('list', 'exNames'); en.id = 'pe-' + e.id; en.maxLength = 80;
     en.setAttribute('aria-label', 'Упражнение ' + (k + 1));
     data(en, { a: 'ex-name', day: d.id, ex: e.id });
-    const es = el('input', 'field num'); es.type = 'text'; es.inputMode = 'numeric'; es.value = e.sets; es.placeholder = '3'; es.id = 'ps-' + e.id; es.maxLength = 3;
-    es.setAttribute('aria-label', 'Подходы, упражнение ' + (k + 1));
-    data(es, { a: 'ex-sets', day: d.id, ex: e.id });
-    const er = el('input', 'field num'); er.type = 'text'; er.value = e.reps; er.placeholder = '5'; er.id = 'pr-' + e.id; er.maxLength = 12;
-    er.setAttribute('aria-label', 'Повторы, упражнение ' + (k + 1));
-    data(er, { a: 'ex-reps', day: d.id, ex: e.id });
+    const top = el('div', 'ped-top');
+    const th = thumbEl(e.name);
+    if (th) top.append(th);
+    const pick = data(btn('iconbtn', findEx(e.name) ? 'Сменить из каталога' : 'Выбрать из каталога'), { a: 'pex-pick', day: d.id, ex: e.id });
+    pick.setAttribute('aria-label', 'Выбрать упражнение ' + (k + 1) + ' из каталога');
+    top.append(pick);
+    row.append(en);
+    const nums = el('div', 'ped-nums');
+    const field = (cls, a, val, ph, label, mode, max) => {
+      const wrap = el('label', 'ped-num');
+      const inp = el('input', 'field num'); inp.type = 'text'; inp.value = val; inp.placeholder = ph; inp.maxLength = max;
+      if (mode) inp.inputMode = mode;
+      inp.id = a + '-' + e.id;
+      data(inp, { a, day: d.id, ex: e.id });
+      wrap.append(el('span', 'lbl', label), inp);
+      return wrap;
+    };
+    nums.append(field('', 'ex-sets', e.sets, '3', 'Подходы', 'numeric', 3), field('', 'ex-reps', e.reps, '12', 'Повторы', '', 12), field('', 'ex-weight', e.weight || '', '—', 'Вес, кг', 'decimal', 7));
+    const note = el('textarea', 'field'); note.rows = 2; note.style.minHeight = '64px'; note.value = e.note || ''; note.maxLength = 300; note.id = 'pn-' + e.id;
+    note.placeholder = 'Комментарий по технике (необязательно)';
+    note.setAttribute('aria-label', 'Комментарий к упражнению ' + (k + 1));
+    data(note, { a: 'ex-note', day: d.id, ex: e.id });
     const tools = el('div', 'tools');
     if (k > 0) tools.append(data(btn('iconbtn', '↑'), { a: 'ex-up', day: d.id, ex: e.id }));
     if (k < d.exercises.length - 1) tools.append(data(btn('iconbtn', '↓'), { a: 'ex-down', day: d.id, ex: e.id }));
     tools.append(data(btn('iconbtn danger', 'Убрать'), { a: 'ex-del', day: d.id, ex: e.id }));
     tools.querySelectorAll('.iconbtn').forEach((b) => b.setAttribute('aria-label', b.textContent === '↑' ? 'Выше' : b.textContent === '↓' ? 'Ниже' : 'Убрать упражнение'));
-    row.append(en, es, er, tools);
+    row.append(top, nums, note, tools);
     c.append(row);
   });
   c.append(data(btn('ghost', '+ упражнение'), { a: 'ex-add', day: d.id }));
@@ -961,7 +1091,7 @@ function dayEditor(d) {
 }
 const LETTERS = 'АБВГДЕЖЗИК';
 function addDay() {
-  const d = { id: newId(), name: 'Тренировка ' + (LETTERS[S.gym.days.length] || S.gym.days.length + 1), exercises: [{ id: newId(), name: '', sets: '3', reps: '' }] };
+  const d = { id: newId(), name: 'Тренировка ' + (LETTERS[S.gym.days.length] || S.gym.days.length + 1), note: '', exercises: [{ id: newId(), name: '', sets: '3', reps: '', weight: '', note: '' }] };
   S.gym.days.push(d);
   ui.editDay = d.id;
   save(); renderGym();
@@ -1108,7 +1238,8 @@ function historyView(box) {
       const det = el('div', 'hdetail');
       w.items.forEach((it) => {
         const p = el('div', 'hitem');
-        p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.map(setStr).join(', ')));
+        p.append(el('b', null, it.name + ': '), document.createTextNode(it.sets.length ? it.sets.map(setStr).join(', ') : 'подходы не записаны'));
+        if (it.note) p.append(el('span', 'pday-note', ' · ' + it.note));
         det.append(p);
       });
       if (w.note) det.append(el('p', 'muted', w.note));
@@ -1138,15 +1269,20 @@ function renderGym() {
   else historyView(box);
   window.scrollTo(0, y);
 }
-function addExercise() {
-  const a = S.gym.active, inp = $('#addExInput');
-  if (!a || !inp) return;
-  const name = inp.value.trim();
-  if (!name) { inp.focus(); return; }
-  const planned = S.gym.days.flatMap((d) => d.exercises).find((e) => normName(e.name) === normName(name));
-  a.items.push(makeItem(name, planned ? planned.sets : '', planned ? planned.reps : ''));
+function addExerciseNamed(name) {
+  const a = S.gym.active;
+  if (!a || !name) return;
+  a.items.push(makeItem(planFor(name) || { name }));
   save(); renderGym();
 }
+function addExercise() {
+  const inp = $('#addExInput');
+  if (!inp) return;
+  const name = inp.value.trim();
+  if (!name) { inp.focus(); return; }
+  addExerciseNamed(name);
+}
+const exById = (dayId, exId) => { const d = dayById(dayId); return d ? d.exercises.find((x) => x.id === exId) : null; };
 
 document.querySelectorAll('.gv').forEach((b) => b.addEventListener('click', () => {
   ui.gymView = b.dataset.view; ui.editDay = null; rememberUi(); renderGym(); window.scrollTo(0, 0);
@@ -1161,9 +1297,10 @@ $('#gymBody').addEventListener('input', (e) => {
   } else if (a === 'w-note' && act) { act.note = t.value; save(); }
   else if (a === 'w-date' && act) { if (/^\d{4}-\d{2}-\d{2}$/.test(t.value)) { act.date = t.value; save(); } }
   else if (a === 'day-name') { const d = dayById(t.dataset.day); if (d) { d.name = t.value; save(); } }
-  else if (a === 'ex-name' || a === 'ex-sets' || a === 'ex-reps') {
-    const d = dayById(t.dataset.day), ex = d && d.exercises.find((x) => x.id === t.dataset.ex);
-    if (ex) { ex[a === 'ex-name' ? 'name' : a === 'ex-sets' ? 'sets' : 'reps'] = t.value; save(); }
+  else if (a === 'day-note') { const d = dayById(t.dataset.day); if (d) { d.note = t.value; save(); } }
+  else if (['ex-name', 'ex-sets', 'ex-reps', 'ex-weight', 'ex-note'].includes(a)) {
+    const ex = exById(t.dataset.day, t.dataset.ex);
+    if (ex) { ex[a.slice(3)] = t.value; save(); }
   }
 });
 $('#gymBody').addEventListener('click', async (e) => {
@@ -1176,7 +1313,15 @@ $('#gymBody').addEventListener('click', async (e) => {
   else if (a === 'add-row' && act) { const it = act.items[i]; const last = it.rows[it.rows.length - 1]; it.rows.push({ w: last && last.done ? last.w : '', r: '', done: false }); save(); renderGym(); }
   else if (a === 'del-row' && act) { const it = act.items[i]; if (it.rows.length > 1) { it.rows.pop(); save(); renderGym(); } }
   else if (a === 'item-menu') itemSheet(i);
+  else if (a === 'ex-info' && act && act.items[i]) exerciseSheet(act.items[i].name, act.items[i].note);
   else if (a === 'add-ex') addExercise();
+  else if (a === 'pick-ex') pickExercise(addExerciseNamed);
+  else if (a === 'catalog') pickExercise(null, true);
+  else if (a === 'pex-info') { const ex = exById(t.dataset.day, t.dataset.ex); if (ex) exerciseSheet(ex.name, ex.note); }
+  else if (a === 'pex-pick') {
+    const dayId = t.dataset.day, exId = t.dataset.ex;
+    pickExercise((name) => { const ex = exById(dayId, exId); if (ex) { ex.name = name; save(); renderGym(); } });
+  }
   else if (a === 'finish') finishWorkout();
   else if (a === 'cancel') cancelWorkout();
   else if (a === 'add-day') addDay();
@@ -1191,7 +1336,7 @@ $('#gymBody').addEventListener('click', async (e) => {
     const idx = S.gym.days.indexOf(d);
     S.gym.days.splice(idx, 1); ui.editDay = null; save(); renderGym();
     toast('День удалён', () => { S.gym.days.splice(idx, 0, d); save(); renderGym(); });
-  } else if (a === 'ex-add') { const d = dayById(t.dataset.day); if (d) { d.exercises.push({ id: newId(), name: '', sets: '3', reps: '' }); save(); renderGym(); const inputs = document.querySelectorAll('[data-a="ex-name"][data-day="' + d.id + '"]'); if (inputs.length) inputs[inputs.length - 1].focus(); } }
+  } else if (a === 'ex-add') { const d = dayById(t.dataset.day); if (d) { d.exercises.push({ id: newId(), name: '', sets: '3', reps: '', weight: '', note: '' }); save(); renderGym(); const inputs = document.querySelectorAll('[data-a="ex-name"][data-day="' + d.id + '"]'); if (inputs.length) inputs[inputs.length - 1].focus(); } }
   else if (a === 'ex-up' || a === 'ex-down' || a === 'ex-del') {
     const d = dayById(t.dataset.day);
     if (!d) return;
@@ -1252,6 +1397,33 @@ async function importText(text) {
   let j;
   try { j = JSON.parse(text); } catch (e) { toast('Это не копия дневника: текст не читается.'); return; }
   if (!j || typeof j !== 'object' || (!j.tasks && !j.gym)) { toast('В этом файле нет записей дневника.'); return; }
+  /* файл-добавка (например, прошлые тренировки): ничего не заменяет, только добавляет новое */
+  if (j.kind === 'add') {
+    const g = obj(j.gym);
+    const have = new Set(S.gym.days.map((d) => normName(d.name)));
+    const days = (Array.isArray(g.days) ? g.days : []).filter((d) => d && typeof d === 'object' && !have.has(normName(d.name))).map(normDay);
+    const ws = obj(g.workouts);
+    const wIds = Object.keys(ws).filter((id) => !S.gym.workouts[id] && validWorkout(ws[id]));
+    if (!days.length && !wIds.length) { toast('Всё из этого файла уже есть в дневнике'); return; }
+    const parts = [];
+    if (days.length) parts.push(days.length + ' ' + plural(days.length, ['день', 'дня', 'дней']) + ' в программу');
+    if (wIds.length) parts.push(wIds.length + ' ' + plural(wIds.length, ['тренировку', 'тренировки', 'тренировок']) + ' в историю');
+    if (!(await confirmSheet('Добавить ' + parts.join(' и ') + '? То, что уже записано в телефоне, не изменится.', 'Добавить'))) return;
+    days.forEach((d) => S.gym.days.push(d));
+    wIds.forEach((id) => {
+      const w = ws[id];
+      S.gym.workouts[id] = {
+        date: w.date, title: String(w.title || 'Тренировка'), dayId: null, startedAt: Number(w.startedAt) || 0, finishedAt: Number(w.finishedAt) || 0, note: String(w.note || ''),
+        items: w.items.filter((it) => it && typeof it.name === 'string').map((it) => ({
+          name: it.name, target: String(it.target || ''), note: String(it.note || ''),
+          sets: (Array.isArray(it.sets) ? it.sets : []).map((s) => ({ w: Number(s.w) || 0, r: parseInt(s.r, 10) || 0 })).filter((s) => s.r > 0),
+        })),
+      };
+    });
+    save(); renderAll();
+    toast('Добавлено: ' + parts.join(', '));
+    return;
+  }
   if (j.gym) {
     const has = Object.keys(S.tasks).length + Object.keys(S.gym.workouts).length + S.gym.days.length > 0;
     const when = j.exportedAt ? ' от ' + shortDate(dayKey(new Date(j.exportedAt))) : '';

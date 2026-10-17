@@ -34,6 +34,7 @@
   --margin: #d6505b;
   --done: #2b8253;
   --scrim: rgba(14, 20, 36, .42);
+  --placard: #ffffff;
   --font-hand: "Caveat", "Snell Roundhand", "Segoe Print", cursive;
   --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
   --gutter: 46px;
@@ -45,7 +46,7 @@
   :root {
     --paper: #0e121a; --sheet: #161b26; --grid: #1b2130; --line: #2a3243;
     --fg: #e6e9f1; --muted: #8f98ac; --ink: #93abff; --ink-soft: #1d2747; --on-ink: #0e121a;
-    --margin: #ef7d86; --done: #62c491; --scrim: rgba(0, 0, 0, .55);
+    --margin: #ef7d86; --done: #62c491; --scrim: rgba(0, 0, 0, .55); --placard: #ffffff;
     color-scheme: dark;
   }
 }
@@ -329,7 +330,8 @@ button { cursor: pointer; touch-action: manipulation; }
 .w-timers { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .w-timers b { color: var(--fg); font-weight: 700; }
 .w-date { max-width: 180px; }
-.ex-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.ex-head { display: flex; align-items: flex-start; gap: 10px; }
+.ex-head > .stack { flex: 1; min-width: 0; }
 .ex-prev { margin: 0; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .sets { display: grid; gap: 6px; }
 .set {
@@ -365,16 +367,46 @@ button { cursor: pointer; touch-action: manipulation; }
   font-size: 14px; font-weight: 600;
 }
 
-.pday-ex { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
-.pday-ex:first-of-type { border-top: 0; }
-.ped { display: grid; gap: 8px; }
-.ped-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) 52px 70px; gap: 6px;
-  padding: 8px 0; border-top: 1px solid var(--line);
+.pday-ex {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 0;
+  border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left;
 }
-.ped-row .tools { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end; }
+.pday-mid { display: grid; gap: 2px; min-width: 0; }
+.pday-name { font-weight: 600; overflow-wrap: anywhere; }
+.pday-note { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.ped { display: grid; gap: 8px; }
+.ped-row { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.ped-top { display: flex; align-items: center; gap: 8px; }
+.ped-top .field { flex: 1; min-width: 0; }
+.ped-top .thumb { width: 52px; height: 40px; }
+.ped-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ped-num { display: grid; gap: 4px; }
+.ped-row .tools { display: flex; gap: 6px; justify-content: flex-end; }
 .ped-row .field { min-height: 42px; padding: 8px 10px; }
 .ped-row .num { text-align: center; }
+
+/* рисунки упражнений: белая «табличка», как на тренажёре, в обеих темах */
+.thumb { flex: none; width: 64px; height: 48px; object-fit: contain; background: var(--placard); border: 1px solid var(--line); border-radius: 8px; }
+.thumb.none { display: block; background: var(--paper); }
+.thumbbtn { flex: none; padding: 0; border: 0; background: transparent; }
+.linkbtn { min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.ex-note { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--ink-soft); font-size: 14px; overflow-wrap: anywhere; }
+.catlist { display: grid; gap: 6px; }
+.catlist .lbl { margin-top: 8px; }
+.catrow {
+  display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 12px;
+  width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--paper); text-align: left; font-size: 16px; font-weight: 600;
+}
+.catrow img { width: 76px; height: 56px; object-fit: contain; background: var(--placard); border-radius: 8px; }
+.placard { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; background: var(--placard); border: 1px solid var(--line); border-radius: 12px; }
+.placard img { width: 100%; height: 160px; object-fit: contain; }
+.sheet-h { margin: 0; font-size: 20px; line-height: 1.25; }
+.tips { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 15px; }
+.note-text { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--ink-soft); overflow-wrap: anywhere; }
+.credit { margin: 0; color: var(--muted); font-size: 12px; }
+.back { justify-self: start; }
 .iconbtn {
   min-width: 40px; height: 36px; padding: 0 10px;
   border: 1px solid var(--line); border-radius: 9px;
@@ -586,6 +618,7 @@ button { cursor: pointer; touch-action: manipulation; }
     </div>
 
     <p class="muted" id="storageLine"></p>
+    <p class="muted">Рисунки упражнений: Everkinetic (everkinetic.com), лицензия CC BY-SA 4.0.</p>
   </section>
 </div>
 
@@ -605,6 +638,7 @@ button { cursor: pointer; touch-action: manipulation; }
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <datalist id="exNames"></datalist>
 
+<script src="exercises.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
