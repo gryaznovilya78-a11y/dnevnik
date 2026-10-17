@@ -418,7 +418,8 @@ function taskEl(t, ctx) {
   const more = btn('more', '⋯', () => taskSheet(t));
   more.setAttribute('aria-label', 'Действия с делом');
   side.append(more);
-  li.append(mark, check, body, side);
+  side.prepend(mark);
+  li.append(check, body, side);
   return li;
 }
 
@@ -459,8 +460,30 @@ function periodText() {
 }
 
 function renderTop() {
+  const line = $('#todayLine');
+  if (!line) return;
   const t = today();
-  $('#todayLine').textContent = cap(WD_LONG[t.getDay()]) + ', ' + t.getDate() + ' ' + MONTHS_GEN[t.getMonth()];
+  line.textContent = cap(WD_LONG[t.getDay()]) + ', ' + t.getDate() + ' ' + MONTHS_GEN[t.getMonth()];
+}
+/* полоска дней недели над делами (только в режиме «День») */
+function renderWeekStrip() {
+  const box = $('#weekStrip');
+  const dayMode = ui.scope === 'day';
+  box.hidden = !dayMode;
+  $('#quick').hidden = dayMode;
+  if (!dayMode) return;
+  const mon = mondayOf(ui.anchor), tKey = dayKey(today()), sel = dayKey(ui.anchor);
+  box.replaceChildren(...Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(mon, i), k = dayKey(d);
+    const items = tasks.filter((t) => t.scope === 'day' && t.period === k);
+    const open = items.filter((t) => !t.done).length;
+    const dot = !items.length ? '' : !open ? ' ok' : k < tKey ? ' miss' : ' plan';
+    const b = btn('wk-d' + (k === sel ? ' sel' : '') + (k === tKey ? ' tod' : ''), null, () => { ui.anchor = startOfDay(d); renderDiary(); });
+    b.append(el('span', 'wk-l', WD_SHORT[d.getDay()]), el('span', 'wk-n', String(d.getDate())), el('span', 'wk-dot' + dot));
+    b.setAttribute('aria-label', d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + (items.length ? ', дел: ' + items.length + ', не сделано: ' + open : ', дел нет'));
+    if (k === sel) b.setAttribute('aria-current', 'date');
+    return b;
+  }));
 }
 function renderScopes() {
   const t = today();
@@ -489,21 +512,19 @@ function renderPeriod() {
   $('#prevBtn').setAttribute('aria-label', labels[0]);
   $('#nextBtn').setAttribute('aria-label', labels[1]);
 }
+/* шапка карточки дел: название и сколько сделано */
 function renderProgress(items) {
   const box = $('#progress');
   const total = items.length, n = items.filter((t) => t.done).length;
-  if (!total) { box.replaceChildren(); box.hidden = true; return; }
-  box.hidden = false;
-  let vis;
-  if (total <= 20) {
-    vis = el('div', 'cells');
-    for (let i = 0; i < total; i++) vis.append(el('i', 'cell' + (i < n ? ' on' : '')));
-  } else {
-    vis = el('div', 'bar');
-    const fill = el('i'); fill.style.width = Math.round(100 * n / total) + '%'; vis.append(fill);
-  }
-  vis.setAttribute('aria-hidden', 'true');
-  box.replaceChildren(vis, el('span', 'ptext' + (n === total ? ' all' : ''), n === total ? 'Всё сделано: ' + n + ' из ' + total : 'Сделано ' + n + ' из ' + total));
+  const title = el('h2', null, { day: 'Дела', week: 'Планы недели', month: 'Планы месяца' }[ui.scope]);
+  if (!total) { box.replaceChildren(title); return; }
+  const meter = el('span', 'meter' + (n === total ? ' all' : ''));
+  const bar = el('span', 'bar');
+  const fill = el('i'); fill.style.width = Math.round(100 * n / total) + '%';
+  bar.append(fill);
+  bar.setAttribute('aria-hidden', 'true');
+  meter.append(document.createTextNode(n === total ? 'всё сделано' : n + ' из ' + total), bar);
+  box.replaceChildren(title, meter);
 }
 function renderTails() {
   const box = $('#tails'), scope = ui.scope, cur = keyFor(scope, today());
@@ -613,7 +634,7 @@ function renderDiaryList() {
   const empty = $('#empty');
   if (!items.length) {
     empty.hidden = false;
-    empty.textContent = 'Пока пусто. Впиши дело в строку выше. «!» на полях отмечает важное, «⋯» переносит или удаляет.';
+    empty.textContent = 'Пока пусто. Впиши дело в строку ниже. Через «⋯» его можно перенести или отметить важным.';
   } else empty.hidden = true;
   renderTails(); renderUpper(); renderExtra();
 }
@@ -626,7 +647,7 @@ function rollover() {
 }
 function renderDiary() {
   rollover();
-  renderTop(); renderScopes(); renderPeriod(); renderDiaryList(); bindNote(); renderNudge();
+  renderTop(); renderScopes(); renderPeriod(); renderWeekStrip(); renderDiaryList(); bindNote(); renderNudge();
 }
 function setScope(scope, date) {
   let d = date;
@@ -1380,18 +1401,31 @@ function progressView(box) {
   box.append(list);
 }
 function exerciseDetail(box, e) {
-  const back = data(btn('quickbtn', '‹ Все упражнения'), { a: 'prog-back' });
-  back.style.justifySelf = 'start';
-  box.append(back);
+  box.append(data(btn('linkbtn back', '‹ Все упражнения'), { a: 'prog-back' }));
+  const ent = findEx(e.name);
+  const head = el('div', 'stack');
+  head.style.gap = '4px';
+  head.append(el('h2', 'sheet-h', e.name), el('p', 'muted', (ent ? ent.group + ' · ' : '') + e.points.length + ' ' + plural(e.points.length, ['тренировка', 'тренировки', 'тренировок'])));
+  box.append(head);
+  const imgs = exImgs(ent);
+  if (imgs.length) {
+    const pics = data(btn('placard' + (imgs.length === 1 ? ' one' : '')), { a: 'prog-info', name: e.name });
+    pics.setAttribute('aria-label', 'Как делать: ' + e.name);
+    imgs.forEach((src) => { const im = el('img'); im.src = src; im.alt = ''; pics.append(im); });
+    box.append(pics);
+  } else {
+    box.append(data(btn('linkbtn back', 'Как делать, добавить фото'), { a: 'prog-info', name: e.name }));
+  }
+  const delta = e.bw ? e.last.maxR - e.first.maxR : e.last.maxW - e.first.maxW;
+  const tiles = el('div', 'tiles');
+  const tile = (label, value, cls) => { const t = el('div', 'tile'); t.append(el('span', null, label), el('b', cls || null, value)); return t; };
+  const lastD = parseDay(e.last.date);
+  tiles.append(
+    tile('Рекорд', e.bw ? e.pr + ' повт' : fmtKg(e.pr) + ' кг'),
+    tile('Прирост', e.points.length < 2 ? '—' : (delta > 0 ? '+' : delta < 0 ? '−' : '') + (e.bw ? Math.abs(delta) + ' повт' : fmtKg(Math.abs(delta)) + ' кг'), delta > 0 ? 'up' : delta < 0 ? 'down' : ''),
+    tile('Последний', lastD.getDate() + ' ' + MONTHS_SHORT[lastD.getMonth()]));
+  box.append(tiles);
   const c = el('div', 'card');
-  const ph = el('div', 'ex-head');
-  const pth = thumbEl(e.name);
-  if (pth) ph.append(pth);
-  const pt = el('div', 'stack');
-  pt.style.gap = '4px';
-  pt.append(el('h2', null, e.name), data(btn('linkbtn', 'Как делать, фото'), { a: 'prog-info', name: e.name }));
-  ph.append(pt);
-  c.append(ph);
   const metrics = e.bw ? [['r', 'Повторы']] : [['w', 'Рабочий вес'], ['e', '1ПМ (расчёт)'], ['r', 'Повторы']];
   if (!metrics.some((m) => m[0] === ui.progressMetric)) ui.progressMetric = metrics[0][0];
   if (metrics.length > 1) {
