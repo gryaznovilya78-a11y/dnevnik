@@ -161,7 +161,7 @@ function emptyState() {
 }
 function normDay(d) {
   return {
-    id: String(d.id || newId()), name: String(d.name || 'Тренировка'), note: String(d.note || ''),
+    id: String(d.id || newId()), name: String(d.name || 'Тренировка'), note: String(d.note || ''), archived: !!d.archived,
     exercises: Array.isArray(d.exercises) ? d.exercises.filter((e) => e && typeof e === 'object').map((e) => ({
       id: String(e.id || newId()), name: String(e.name || ''), sets: String(e.sets ?? ''), reps: String(e.reps ?? ''),
       weight: String(e.weight ?? ''), note: String(e.note || ''),
@@ -1016,7 +1016,7 @@ function placeholderFor(it, j, prev) {
   return { w, r };
 }
 function suggestNextDay() {
-  const days = S.gym.days.filter((d) => d.exercises.some((e) => e.name.trim()));
+  const days = S.gym.days.filter((d) => !d.archived && d.exercises.some((e) => e.name.trim()));
   if (!days.length) return null;
   const last = finishedWorkouts().find((w) => w.dayId && days.some((d) => d.id === w.dayId));
   if (!last) return days[0];
@@ -1044,6 +1044,37 @@ function editWorkout(id) {
   ui.gymView = 'workout'; rememberUi();
   save(); renderGym();
   window.scrollTo(0, 0);
+}
+/* прошлая тренировка → новый день программы: упражнения, подходы, повторы и вес из неё */
+const mostCommon = (arr) => {
+  const m = new Map();
+  arr.forEach((x) => m.set(x, (m.get(x) || 0) + 1));
+  let best = arr[0], cnt = 0;
+  m.forEach((v, k) => { if (v > cnt) { cnt = v; best = k; } });
+  return best;
+};
+function workoutToDay(id) {
+  const w = S.gym.workouts[id];
+  if (!w) return;
+  const exercises = w.items.filter((it) => it.name && it.name.trim()).map((it) => {
+    const sets = it.sets || [];
+    const maxW = sets.length ? Math.max(...sets.map((s) => s.w || 0)) : 0;
+    return {
+      id: newId(), name: it.name,
+      sets: String(sets.length || parseInt(it.target, 10) || ''),
+      reps: String(sets.length ? mostCommon(sets.map((s) => s.r)) : targetReps(it.target) || ''),
+      weight: maxW ? fmtKg(maxW) : '', note: it.note || '',
+    };
+  });
+  let name = (w.title || 'Тренировка').trim();
+  if (S.gym.days.some((d) => normName(d.name) === normName(name))) name += ' · ' + shortDate(w.date);
+  const d = { id: newId(), name, note: '', archived: false, exercises };
+  S.gym.days.push(d);
+  ui.gymView = 'program'; ui.editDay = d.id; rememberUi();
+  save(); renderGym();
+  const inp = document.getElementById('dn-' + d.id);
+  if (inp) inp.scrollIntoView({ block: 'center' });
+  toast('В программе новый день «' + name + '»: переименуй и поправь, если нужно');
 }
 function tickSet(i, j) {
   const a = S.gym.active, it = a && a.items[i], r = it && it.rows[j];
@@ -1111,7 +1142,12 @@ function workoutView(box) {
   if (!a) { startView(box); return; }
   const head = el('div', 'card');
   const hrow = el('div', 'row between');
-  hrow.append(el('h2', null, a.title));
+  const title = el('input', 'field w-title');
+  title.type = 'text'; title.id = 'wTitle'; title.value = a.title; title.maxLength = 60;
+  title.placeholder = 'Название, например «С тренером: спина»';
+  title.setAttribute('aria-label', 'Название тренировки');
+  data(title, { a: 'w-title' });
+  hrow.append(title);
   if (a.isEdit) hrow.append(el('span', 'pill', 'правка записи'));
   const dateIn = el('input', 'field w-date');
   dateIn.type = 'date'; dateIn.id = 'wDate'; dateIn.value = a.date;
@@ -1207,7 +1243,7 @@ function itemCard(it, i, a) {
 }
 function startView(box) {
   const next = suggestNextDay();
-  const days = S.gym.days.filter((d) => d.exercises.some((e) => e.name.trim()));
+  const days = S.gym.days.filter((d) => !d.archived && d.exercises.some((e) => e.name.trim()));
   const card = el('div', 'card');
   card.append(el('h2', null, 'Начать тренировку'));
   if (days.length) card.append(el('p', 'muted', 'Выбери день программы: упражнения, подходы, повторы и веса подставятся сами, останется отмечать подходы галочкой.'));
@@ -1252,16 +1288,28 @@ setInterval(() => { if (ui.tab === 'gym' && ui.gymView === 'workout' && !documen
 
 function programView(box) {
   box.append(data(btn('ghost', 'Каталог упражнений с картинками'), { a: 'catalog' }));
-  if (!S.gym.days.length) {
+  const active = S.gym.days.filter((d) => !d.archived);
+  const archived = S.gym.days.filter((d) => d.archived);
+  if (!active.length) {
     const c = el('div', 'card');
-    c.append(el('h2', null, 'Программы пока нет'));
-    c.append(el('p', 'muted', 'Запиши тренировочные дни: например, «Спина» с тягой верхнего блока 3×12. Упражнения удобно выбирать из каталога: там правильные названия, рисунки и техника.'));
+    c.append(el('h2', null, archived.length ? 'Все дни в архиве' : 'Программы пока нет'));
+    c.append(el('p', 'muted', 'Запиши тренировочные дни: например, «Ноги», «Спина и руки», «Грудь и руки». Упражнения удобно выбирать из каталога: там правильные названия, рисунки и техника.'));
     c.append(data(btn('primary', '+ Тренировочный день'), { a: 'add-day' }));
     box.append(c);
-    return;
+  } else {
+    active.forEach((d) => box.append(ui.editDay === d.id ? dayEditor(d) : dayCard(d)));
+    box.append(data(btn('ghost', '+ Тренировочный день'), { a: 'add-day' }));
   }
-  S.gym.days.forEach((d) => box.append(ui.editDay === d.id ? dayEditor(d) : dayCard(d)));
-  box.append(data(btn('ghost', '+ Тренировочный день'), { a: 'add-day' }));
+  if (archived.length) {
+    const h = data(btn('ghost'), { a: 'toggle-archive' });
+    h.textContent = (ui.showArchive ? 'Скрыть архив' : 'Архив') + ' · ' + archived.length + ' ' + plural(archived.length, ['день', 'дня', 'дней']);
+    h.setAttribute('aria-expanded', String(!!ui.showArchive));
+    box.append(h);
+    if (ui.showArchive) {
+      box.append(el('p', 'muted', 'Эти дни не показываются в «Начать тренировку», но всё в них сохранено. Их можно вернуть в программу.'));
+      archived.forEach((d) => box.append(ui.editDay === d.id ? dayEditor(d) : dayCard(d)));
+    }
+  }
 }
 function planText(e) {
   const t = targetText(e.sets, e.reps);
@@ -1269,9 +1317,12 @@ function planText(e) {
   return [t, w ? w.replace('.', ',') + ' кг' : ''].filter(Boolean).join(' · ');
 }
 function dayCard(d) {
-  const c = el('div', 'card');
+  const c = el('div', 'card' + (d.archived ? ' archived' : ''));
   const head = el('div', 'row between');
-  head.append(el('h2', null, d.name), data(btn('quickbtn', 'Изменить'), { a: 'edit-day', day: d.id }));
+  const acts = el('div', 'row');
+  if (d.archived) acts.append(data(btn('quickbtn', 'Вернуть'), { a: 'unarch-day', day: d.id }));
+  acts.append(data(btn('quickbtn', 'Изменить'), { a: 'edit-day', day: d.id }));
+  head.append(el('h2', null, d.name), acts);
   c.append(head);
   if (d.note && d.note.trim()) c.append(el('p', 'ex-note', d.note));
   const list = d.exercises.filter((e) => e.name.trim());
@@ -1285,7 +1336,7 @@ function dayCard(d) {
     row.append(th || el('span', 'nopic small', 'нет фото'), mid, el('span', 'pill', planText(e) || '—'));
     c.append(row);
   });
-  if (list.length) c.append(data(btn('primary', 'Начать эту тренировку'), { a: 'start', day: d.id }));
+  if (list.length && !d.archived) c.append(data(btn('primary', 'Начать эту тренировку'), { a: 'start', day: d.id }));
   return c;
 }
 function dayEditor(d) {
@@ -1336,7 +1387,10 @@ function dayEditor(d) {
   c.append(data(btn('ghost', '+ упражнение'), { a: 'ex-add', day: d.id }));
   c.append(el('p', 'muted', 'Повторы можно писать диапазоном, например 8–10.'));
   const foot = el('div', 'row between');
-  foot.append(data(btn('ghost danger', 'Удалить день'), { a: 'del-day', day: d.id }), data(btn('primary', 'Готово'), { a: 'done-day', day: d.id }));
+  const left = el('div', 'row');
+  left.append(data(btn('ghost danger', 'Удалить'), { a: 'del-day', day: d.id }));
+  if (!d.archived) left.append(data(btn('ghost', 'В архив'), { a: 'arch-day', day: d.id }));
+  foot.append(left, data(btn('primary', 'Готово'), { a: 'done-day', day: d.id }));
   c.append(foot);
   return c;
 }
@@ -1518,7 +1572,7 @@ function historyView(box) {
       });
       if (w.note) det.append(el('p', 'muted', w.note));
       const tools = el('div', 'row');
-      tools.append(data(btn('quickbtn', 'Изменить'), { a: 'hist-edit', id: w.id }), data(btn('quickbtn', 'Удалить'), { a: 'hist-del', id: w.id }));
+      tools.append(data(btn('quickbtn', 'Изменить'), { a: 'hist-edit', id: w.id }), data(btn('quickbtn', 'Сделать днём программы'), { a: 'hist-to-day', id: w.id }), data(btn('quickbtn', 'Удалить'), { a: 'hist-del', id: w.id }));
       tools.lastChild.style.color = 'var(--margin)';
       det.append(tools);
       c.append(det);
@@ -1572,6 +1626,7 @@ $('#gymBody').addEventListener('input', (e) => {
   else if (a === 'w-date' && act) { if (/^\d{4}-\d{2}-\d{2}$/.test(t.value)) { act.date = t.value; save(); } }
   else if (a === 'day-name') { const d = dayById(t.dataset.day); if (d) { d.name = t.value; save(); } }
   else if (a === 'day-note') { const d = dayById(t.dataset.day); if (d) { d.note = t.value; save(); } }
+  else if (a === 'w-title' && act) { act.title = t.value; save(); }
   else if (['ex-name', 'ex-sets', 'ex-reps', 'ex-weight', 'ex-note'].includes(a)) {
     const ex = exById(t.dataset.day, t.dataset.ex);
     if (ex) { ex[a.slice(3)] = t.value; save(); }
@@ -1624,6 +1679,16 @@ $('#gymBody').addEventListener('click', async (e) => {
   else if (a === 'metric') { ui.progressMetric = t.dataset.m; renderGym(); }
   else if (a === 'hist-toggle') { ui.openWorkout = ui.openWorkout === t.dataset.id ? null : t.dataset.id; renderGym(); }
   else if (a === 'hist-edit') editWorkout(t.dataset.id);
+  else if (a === 'hist-to-day') workoutToDay(t.dataset.id);
+  else if (a === 'toggle-archive') { ui.showArchive = !ui.showArchive; renderGym(); }
+  else if (a === 'arch-day' || a === 'unarch-day') {
+    const d = dayById(t.dataset.day);
+    if (!d) return;
+    d.archived = a === 'arch-day';
+    if (d.archived) d.exercises = d.exercises.filter((x) => x.name.trim());
+    ui.editDay = null; save(); renderGym();
+    toast(d.archived ? '«' + d.name + '» в архиве: внизу программы' : '«' + d.name + '» снова в программе', () => { d.archived = !d.archived; save(); renderGym(); });
+  }
   else if (a === 'hist-ex') exerciseSheet(t.dataset.name, t.dataset.note);
   else if (a === 'prog-info') exerciseSheet(t.dataset.name);
   else if (a === 'hist-del') {
