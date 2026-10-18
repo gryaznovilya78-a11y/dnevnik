@@ -141,6 +141,13 @@ h1, h2, h3 { text-wrap: balance; }
 .wk-d.tod .wk-l, .wk-d.tod .wk-n { color: var(--ink); font-weight: 600; }
 .wk-d.sel .wk-n { background: var(--ink); color: var(--on-ink); font-weight: 600; }
 .wk-d.sel .wk-l { color: var(--ink); font-weight: 600; }
+.wk-n { position: relative; }
+.wk-d.gym .wk-n::after { content: ""; position: absolute; top: 4px; right: 3px; width: 7px; height: 2px; border-radius: 1px; background: var(--ink); }
+.wk-d.gym.sel .wk-n::after { background: var(--on-ink); }
+.gymrow { display: grid; gap: 2px; width: 100%; padding: 12px 0; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; }
+.gymrow:first-child { border-top: 0; }
+.gymrow b { font-weight: 600; }
+.gymrow .sub { color: var(--muted); font-size: 13px; }
 
 /* the main tasks card */
 .sheet { padding: 4px 18px 10px; background: var(--sheet); border-radius: 22px; box-shadow: var(--shadow); min-width: 0; }
@@ -211,6 +218,9 @@ textarea.field { min-height: 88px; resize: vertical; line-height: 1.45; }
 .task.important .text { font-weight: 500; }
 .task.done .text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--ring); }
 .from { display: block; margin-top: 2px; color: var(--margin); font-size: 12px; }
+.rep { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.wdpick { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.wdpick .chip { padding: 4px 0; }
 .edit { width: 100%; padding: 6px 10px; border: 0; border-radius: 10px; background: var(--soft); font-size: 16px; outline: 2px solid var(--ink); }
 .side { display: flex; align-items: center; gap: 6px; }
 .mark { width: 24px; height: 32px; padding: 0; border: 0; background: transparent; display: grid; place-items: center; font-size: 0; color: transparent; }
@@ -316,14 +326,19 @@ textarea.field { min-height: 88px; resize: vertical; line-height: 1.45; }
 .w-timers > span { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 12px; border-radius: 15px; background: var(--soft); color: var(--muted); font-size: 13px; }
 .w-timers > span:empty { display: none; }
 .w-timers b { color: var(--fg); font-weight: 600; }
-#wRest { background: var(--ink-soft); color: var(--ink); }
-#wRest b { color: var(--ink); }
 .w-date { max-width: 190px; min-height: 40px; padding: 6px 12px; }
 .w-title { flex: 1; min-height: 44px; padding: 6px 12px; font-size: 19px; font-weight: 600; }
 .card.archived { background: transparent; box-shadow: none; border: 1.5px dashed var(--line); }
+.card.stale { background: color-mix(in srgb, var(--margin) 10%, var(--sheet)); }
+.card.stale p { margin: 0; font-size: 15px; }
+.card.stale .row > * { flex: 1; min-height: 46px; }
 .ex-head { display: flex; align-items: center; gap: 14px; }
 .ex-head > .stack { flex: 1; min-width: 0; gap: 6px; }
 .ex-prev { margin: 0; color: var(--muted); font-size: 13px; }
+.hint { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 10px; font-size: 13px; }
+.hint.up, .hint.bw { padding: 10px 10px 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--done) 13%, transparent); color: var(--fg); }
+.hint.up > span::before, .hint.bw > span::before { content: "↑ "; color: var(--done); font-weight: 700; }
+.hint.hold { color: var(--muted); }
 .sets { display: grid; gap: 8px; }
 .set {
   display: grid;
@@ -467,6 +482,29 @@ select.field:disabled { opacity: .6; }
 .filebtn input { position: absolute; inset: 0; opacity: 0; font-size: 0; }
 details summary { cursor: pointer; }
 
+/* rest timer above the tab bar */
+.restbar {
+  position: fixed; z-index: 6; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 10px);
+  width: min(600px, calc(100vw - 24px));
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px;
+  padding: 10px 10px 12px 16px;
+  border-radius: 18px; border: 1px solid var(--line);
+  background: var(--sheet); box-shadow: var(--lift);
+}
+.rest-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.rest-l { color: var(--muted); font-size: 14px; }
+#restTime { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
+.rest-track { grid-column: 1 / -1; display: block; height: 4px; border-radius: 2px; background: var(--soft); overflow: hidden; }
+.rest-track i { display: block; height: 100%; width: 0; background: var(--ink); }
+.rest-target { min-height: 36px; padding: 0 12px; border: 0; border-radius: 12px; background: var(--soft); color: var(--muted); font-size: 13px; font-weight: 600; }
+.rest-target::before { content: "цель "; font-weight: 500; }
+.restbar.ready { border-color: color-mix(in srgb, var(--done) 50%, transparent); }
+.restbar.ready .rest-l, .restbar.ready #restTime { color: var(--done); }
+.restbar.ready .rest-track i { background: var(--done); }
+body.has-rest .app { padding-bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 120px); }
+body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 100px); }
+
 /* tab bar */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
@@ -507,6 +545,7 @@ details summary { cursor: pointer; }
 .sheet-btn.danger { color: var(--margin); }
 .sheet-btn.cancel { background: transparent; color: var(--muted); }
 .sheet-btn.ok { background: var(--ink); color: var(--on-ink); font-weight: 600; }
+.sheet-note { margin: -4px 4px 2px; font-size: 12px; }
 .sheet-date { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .sheet-date input { min-height: 52px; padding: 0 14px; border: 0; border-radius: 16px; background: var(--soft); font-size: 16px; }
 .sheet-date button { min-height: 52px; padding: 0 16px; border: 0; border-radius: 16px; background: var(--ink-soft); color: var(--ink); font-size: 15px; font-weight: 600; }
@@ -600,7 +639,7 @@ details summary { cursor: pointer; }
 
     <div class="card">
       <h2>Записи живут только в этом телефоне</h2>
-      <p class="muted">Если удалить значок с экрана «Домой», записи пропадут вместе с ним. Раз в неделю сохраняй копию в Файлы или себе в Telegram, тогда их всегда можно вернуть.</p>
+      <p class="muted">Если удалить значок с экрана «Домой» или потерять телефон, записи пропадут. Сохраняй копию после тренировки или хотя бы раз в неделю: «Сохранить копию» → «Сохранить в Файлы» → iCloud Drive. Из iCloud копию можно вернуть даже на новый телефон.</p>
       <div class="stats" id="stats"></div>
       <button class="primary" type="button" id="exportBtn">Сохранить копию</button>
       <p class="muted" id="lastBackup"></p>
@@ -647,6 +686,12 @@ details summary { cursor: pointer; }
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></svg>Копия
   </button>
 </nav>
+
+<div class="restbar" id="restBar" hidden>
+  <div class="rest-main"><span class="rest-l" id="restLabel">Отдых</span><b id="restTime" role="timer">0:00</b></div>
+  <button type="button" class="rest-target" id="restTarget" aria-label="Время отдыха между подходами, нажми, чтобы сменить">2:00</button>
+  <span class="rest-track" aria-hidden="true"><i id="restFill"></i></span>
+</div>
 
 <div class="overlay" id="overlay" hidden><div class="sheet-panel" id="sheetPanel" role="dialog" aria-modal="true"></div></div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
