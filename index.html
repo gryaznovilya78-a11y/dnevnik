@@ -39,6 +39,14 @@
   --lift: 0 10px 30px rgba(20, 24, 40, .12);
   --font: "Onest", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --tabbar: 60px;
+  --done-ink: #23784f;   /* green text that passes contrast */
+  --done-soft: rgba(46, 148, 102, .14);
+  --margin-ink: #b83c31;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --spring: cubic-bezier(.34, 1.56, .64, 1);
+  /* the hero */
+  --hero: #4357d6; --hero-deep: #3043b8; --belly: #cdd5ff; --band: #dd5246; --cape: #c8463b; --iron: #2a2f3a;
+  --hero-shadow: rgba(20, 24, 40, .10); --glow: rgba(67, 87, 214, .09);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -47,6 +55,9 @@
     --fg: #eceef3; --muted: #8f97a9; --ink: #93a2ff; --ink-soft: rgba(147, 162, 255, .16); --on-ink: #0f1115;
     --margin: #ff8075; --done: #5cc48f; --placard: #ffffff; --scrim: rgba(0, 0, 0, .55);
     --shadow: 0 0 0 1px rgba(255, 255, 255, .03); --lift: 0 10px 30px rgba(0, 0, 0, .5);
+    --done-ink: #5cc48f; --done-soft: rgba(92, 196, 143, .16); --margin-ink: #ff8075;
+    --hero: #93a2ff; --hero-deep: #6f80ea; --belly: #e3e7ff; --band: #ff8075; --cape: #e0675c; --iron: #c3c8d3;
+    --hero-shadow: rgba(0, 0, 0, .35); --glow: rgba(147, 162, 255, .12);
     color-scheme: dark;
   }
 }
@@ -216,7 +227,7 @@ textarea.field { min-height: 88px; resize: vertical; line-height: 1.45; }
 .tbody { min-width: 0; }
 .text { overflow-wrap: anywhere; font-size: 16px; }
 .task.important .text { font-weight: 500; }
-.task.done .text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--ring); }
+.task.done .text { color: var(--muted); background: linear-gradient(var(--ring), var(--ring)) 0 58% / 100% 1.5px no-repeat; }
 .from { display: block; margin-top: 2px; color: var(--margin); font-size: 12px; }
 .rep { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 .wdpick { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
@@ -508,7 +519,7 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
 /* tab bar */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: color-mix(in srgb, var(--sheet) 92%, transparent);
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
@@ -564,10 +575,213 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
 }
 .toast-undo { padding: 0; border: 0; background: transparent; color: var(--paper); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 
+/* sliding pill under the selected tab of a segmented control (--n tabs, --i selected) */
+.seg.has-ind { position: relative; }
+.seg.has-ind > button { position: relative; z-index: 1; }
+.seg.has-ind > button[aria-selected="true"] { background: transparent; box-shadow: none; }
+.seg-ind {
+  position: absolute; top: 4px; bottom: 4px; left: 4px;
+  width: calc((100% - 8px - (var(--n) - 1) * 4px) / var(--n));
+  border-radius: 10px; background: var(--sheet); box-shadow: var(--shadow);
+  transform: translateX(calc(var(--i, 0) * (100% + 4px)));
+}
+
+/* XP pops and the set ripple: invisible unless animated */
+.task { position: relative; }
+.xp-float {
+  position: absolute; right: 40px; top: 6px; z-index: 2;
+  padding: 2px 8px; border-radius: 10px;
+  background: var(--done-soft); color: var(--done-ink);
+  font-size: 13px; font-weight: 700; white-space: nowrap;
+  pointer-events: none; opacity: 0;
+}
+.xp-float.small { right: -6px; top: -14px; padding: 1px 6px; background: var(--ink-soft); color: var(--ink); font-size: 12px; }
+.tickwrap { position: relative; width: 44px; height: 44px; }
+.ripple { position: absolute; inset: 0; border-radius: 22px; border: 2px solid var(--ink); pointer-events: none; opacity: 0; }
+
+/* hero: level chip in the diary header */
+.period { position: relative; }
+.herochip {
+  position: absolute; top: 0; right: 0;
+  display: flex; align-items: center; gap: 8px;
+  height: 36px; padding: 0 12px 0 6px;
+  border: 0; border-radius: 18px;
+  background: var(--sheet); box-shadow: var(--shadow); color: var(--fg);
+}
+.hc-face { display: block; width: 30px; height: 27px; }
+.hc-face .hero-svg { overflow: hidden; }
+.hc-text { display: grid; gap: 4px; justify-items: start; }
+.hc-text b { font-size: 12px; line-height: 1; font-weight: 600; }
+.hc-bar { display: block; width: 48px; height: 4px; border-radius: 2px; background: var(--soft); overflow: hidden; }
+.hc-bar > i { display: block; height: 100%; width: 0; background: var(--ink); }
+
+/* hero: the character (shapes are coloured from the theme) */
+.hero-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.h-shadow { fill: var(--hero-shadow); }
+.h-deep { fill: var(--hero-deep); }
+.h-body { fill: var(--hero); }
+.h-belly { fill: var(--belly); }
+.h-band { fill: var(--band); }
+.h-cape { fill: var(--cape); }
+.h-iron { fill: var(--iron); }
+.h-white { fill: #ffffff; }
+.h-pupil { fill: #16181d; }
+.h-cheek { fill: #ff8a7e; opacity: .45; }
+.h-ink { stroke: #16181d; }
+.h-z { fill: var(--muted); font: 600 18px var(--font); }
+
+/* hero screen */
+.hero-card { gap: 14px; padding: 18px 18px 20px; }
+.hero-stage { position: relative; height: 204px; display: flex; align-items: flex-end; justify-content: center; }
+.hero-glow { position: absolute; left: 50%; top: 10px; width: 188px; height: 188px; margin-left: -94px; border-radius: 50%; background: var(--glow); }
+.hero-btn { position: relative; width: 176px; height: 187px; padding: 0; border: 0; background: transparent; }
+.hero-jump { width: 100%; height: 100%; transform-origin: 50% 100%; }
+.hero-say {
+  position: absolute; top: 0; right: 0; z-index: 1; max-width: 150px;
+  padding: 9px 12px; border-radius: 16px 16px 16px 4px;
+  background: var(--soft); font-size: 13px; line-height: 1.3; font-weight: 500;
+  transform-origin: 0 100%;
+}
+.hero-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.hero-name { display: grid; gap: 2px; }
+.hero-name .muted { font-size: 13px; }
+.card .hero-name h2 { font-size: 24px; letter-spacing: -.01em; }
+.hero-row > .muted b { color: var(--fg); font-weight: 600; }
+.xpbar { display: block; height: 10px; border-radius: 5px; background: var(--soft); overflow: hidden; }
+.xpbar.small { height: 5px; border-radius: 3px; }
+.xpbar > i { display: block; height: 100%; border-radius: inherit; background: var(--ink); }
+.hero-list { gap: 0; }
+.hero-list > .row { padding-bottom: 6px; }
+.hero-list > .muted { padding: 10px 0 4px; border-top: 1px solid var(--line); }
+.gain { color: var(--done-ink); font-size: 14px; font-weight: 600; }
+.hero-ev { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+.hero-ev > b { font-weight: 600; }
+.ev-p { color: var(--ink); }
+.ev-d { color: var(--done-ink); }
+.ev-c { color: var(--margin-ink); }
+.hero-path { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.hero-step { display: grid; justify-items: center; gap: 4px; padding: 8px 2px; border-radius: 16px; text-align: center; }
+.hero-step.cur { background: var(--ink-soft); }
+.hero-step.cur b { color: var(--ink); }
+.hero-step b { font-size: 12px; font-weight: 600; }
+.hero-step span { font-size: 11px; color: var(--muted); }
+.hero-mini { width: 56px; height: 60px; }
+.hero-step.locked .hero-mini { opacity: .3; }
+.hero-rules { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; font-size: 14px; }
+.hero-rules b { font-weight: 600; }
+.hero-fine { margin: 0; padding: 10px 12px; border-radius: 14px; background: var(--soft); color: var(--muted); font-size: 13px; line-height: 1.4; }
+
+/* hero: new level */
+.lvlup { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--scrim); }
+.lu-card {
+  position: relative; width: 100%; max-width: 360px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 22px; border-radius: 28px;
+  background: var(--sheet); box-shadow: var(--lift);
+  text-align: center; overflow: hidden;
+}
+.lu-stage { position: relative; width: 240px; height: 210px; }
+.lu-rays { position: absolute; left: 0; top: -20px; width: 240px; height: 240px; fill: var(--ink); opacity: .16; }
+.lu-stars { position: absolute; inset: 0; width: 240px; height: 210px; overflow: visible; fill: var(--band); }
+.lu-char { position: absolute; left: 32px; top: 10px; width: 176px; height: 187px; }
+.lu-kicker { color: var(--muted); font-size: 14px; font-weight: 500; }
+.lu-num { position: relative; width: 120px; height: 64px; overflow: hidden; }
+.lu-num span { position: absolute; inset: 0; font-size: 56px; line-height: 64px; font-weight: 700; letter-spacing: -.03em; }
+.lu-old { opacity: 0; }
+.lu-new { color: var(--ink); }
+.lu-card h2 { margin: 0; font-size: 22px; font-weight: 600; }
+.lu-card p { margin: 0; }
+.lu-unlock { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 14px; border-radius: 16px; background: var(--ink-soft); color: var(--ink); font-size: 14px; font-weight: 600; }
+.lu-unlock svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
+.lu-ok { align-self: stretch; margin-top: 14px; }
+
+/* Motion: short and soft, everything clickable answers the finger.
+   With «Reduce Motion» on the phone none of this runs. */
 @media (prefers-reduced-motion: no-preference) {
-  .sheet-panel { animation: rise .2s ease-out; }
-  @keyframes rise { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
-  .check, .tick, .seg button, .wk-n { transition: background-color .15s, border-color .15s, color .15s; }
+  button { transition: transform .12s ease-out, background-color .2s ease, color .2s ease, border-color .2s ease, box-shadow .2s ease; }
+  button:active:not(:disabled), .filebtn:active { transform: scale(.96); }
+  .filebtn { transition: transform .12s ease-out; }
+  .check, .tick, .seg button, .wk-n { transition: transform .12s ease-out, background-color .2s ease, border-color .2s ease, color .2s ease; }
+  .seg-ind { transition: transform .26s var(--ease); }
+
+  .screen.enter { animation: screenIn .28s var(--ease) both; }
+  @keyframes screenIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .overlay { animation: fadeIn .2s ease-out both; }
+  .overlay.closing { animation: fadeOut .2s ease-in both; }
+  .sheet-panel.up { animation: sheetUp .32s cubic-bezier(.34, 1.25, .64, 1) both; }
+  .overlay.closing .sheet-panel { animation: sheetDown .2s ease-in both; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes sheetUp { from { transform: translateY(60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes sheetDown { from { transform: none; opacity: 1; } to { transform: translateY(60px); opacity: 0; } }
+
+  .toast.show { animation: toastIn .26s var(--ease) both; }
+  .toast.out { animation: toastOut .2s ease-in both; }
+  @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0); } }
+  @keyframes toastOut { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 10px); } }
+
+  .task.enter { animation: rowIn .34s var(--ease) both; }
+  .task.leaving { overflow: hidden; min-height: 0; animation: rowOut .2s ease-in forwards; }
+  @keyframes rowIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes rowOut { to { opacity: 0; transform: translateX(-16px); max-height: 0; padding-top: 0; padding-bottom: 0; } }
+  .task.just .check { animation: pop .34s var(--spring); }
+  .task.just.done .check svg path { stroke-dasharray: 20; animation: draw .26s .06s ease-out both; }
+  .task.just.done .text { animation: strike .32s var(--ease) both; }
+  @keyframes pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+  @keyframes draw { from { stroke-dashoffset: 20; } to { stroke-dashoffset: 0; } }
+  @keyframes strike { from { background-size: 0% 1.5px; } }
+  .xp-float { animation: xpFloat .9s var(--ease) forwards; }
+  @keyframes xpFloat { 0% { opacity: 0; transform: translateY(6px) scale(.8); } 20% { opacity: 1; transform: translateY(-4px) scale(1.05); } 100% { opacity: 0; transform: translateY(-30px); } }
+
+  .bar > i, .hc-bar > i, .xpbar > i { transition: width .6s var(--ease), background-color .3s ease; }
+  .herochip.pulse { animation: pulse .45s var(--spring); }
+  @keyframes pulse { 40% { transform: scale(1.1); } }
+
+  .tick.pop { animation: pop .36s var(--spring); }
+  .ripple { animation: ripple .55s var(--ease) forwards; }
+  @keyframes ripple { from { opacity: .55; transform: scale(.7); } to { opacity: 0; transform: scale(1.8); } }
+  .restbar { animation: restIn .34s cubic-bezier(.34, 1.3, .64, 1) both; }
+  @keyframes restIn { from { opacity: 0; transform: translate(-50%, 24px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+  .hero-breath { transform-origin: 50% 92%; animation: breath 3.4s ease-in-out infinite; }
+  @keyframes breath { 50% { transform: scale(1.02, .98); } }
+  .hero-eyes { transform-box: fill-box; transform-origin: center; animation: blink 5s infinite; }
+  @keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 95.5% { transform: scaleY(.1); } }
+  .h-z { animation: zz 2.6s ease-in-out infinite both; }
+  .h-z2 { animation-delay: 1.3s; }
+  @keyframes zz { 0% { opacity: 0; transform: translateY(6px); } 40% { opacity: 1; } 100% { opacity: 0; transform: translateY(-10px); } }
+  .jump-a { animation: jumpA .72s cubic-bezier(.3, .7, .35, 1); }
+  .jump-b { animation: jumpB .72s cubic-bezier(.3, .7, .35, 1); }
+  @keyframes jumpA { 18% { transform: scale(1.1, .88); } 45% { transform: translateY(-34px) scale(.94, 1.07); } 72% { transform: scale(1.07, .93); } 86% { transform: translateY(-5px); } }
+  @keyframes jumpB { 18% { transform: scale(1.1, .88); } 45% { transform: translateY(-34px) scale(.94, 1.07); } 72% { transform: scale(1.07, .93); } 86% { transform: translateY(-5px); } }
+  .hero-say.show { animation: say .34s var(--spring) both; }
+  @keyframes say { from { opacity: 0; transform: translateY(8px) scale(.85); } to { opacity: 1; transform: none; } }
+  .rise { animation: rise .5s var(--ease) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+  .grow { transform-origin: left center; animation: grow .9s .25s var(--ease) both; }
+  @keyframes grow { from { transform: scaleX(0); } }
+
+  .lvlup { animation: fadeIn .3s ease-out both; }
+  .lvlup.closing { animation: fadeOut .22s ease-in both; }
+  .lu-card { animation: luIn .5s cubic-bezier(.34, 1.4, .64, 1) both; }
+  .lvlup.closing .lu-card { animation: luOut .22s ease-in both; }
+  @keyframes luIn { from { opacity: 0; transform: translateY(30px) scale(.9); } to { opacity: 1; transform: none; } }
+  @keyframes luOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(20px) scale(.96); } }
+  .lu-rays { transform-origin: 50% 50%; animation: spin 24s linear infinite, raysIn .8s .2s ease-out both; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes raysIn { from { opacity: 0; } to { opacity: .16; } }
+  .lu-char { transform-origin: 50% 100%; animation: luChar .8s .15s cubic-bezier(.3, .7, .35, 1) both; }
+  @keyframes luChar { 0% { opacity: 0; transform: translateY(10px) scale(.6); } 35% { opacity: 1; transform: translateY(-26px) scale(.95, 1.08); } 65% { transform: scale(1.08, .92); } 85% { transform: translateY(-4px); } 100% { opacity: 1; transform: none; } }
+  .acc-new { transform-box: fill-box; transform-origin: center; animation: accIn .5s .75s cubic-bezier(.34, 1.8, .64, 1) both; }
+  @keyframes accIn { from { opacity: 0; transform: scale(0) rotate(-40deg); } to { opacity: 1; transform: none; } }
+  .lu-star { transform-box: fill-box; transform-origin: center; animation: star 2.4s ease-in-out infinite both; }
+  @keyframes star { 0%, 100% { opacity: 0; transform: scale(.2); } 50% { opacity: 1; transform: scale(1); } }
+  .lu-old { animation: luOld .4s .45s ease-in both; }
+  @keyframes luOld { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-100%); } }
+  .lu-new { animation: luNew .5s .6s var(--spring) both; }
+  @keyframes luNew { from { opacity: 0; transform: translateY(100%); } to { opacity: 1; transform: none; } }
+  .lu-line { animation: rowIn .4s var(--ease) both; }
 }
 </style>
 </head>
@@ -579,6 +793,10 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
   <!-- ======================= ДНЕВНИК ======================= -->
   <section class="screen" id="screen-diary">
     <section class="period" aria-label="Период">
+      <button class="herochip" type="button" id="heroChip" aria-label="Герой">
+        <span class="hc-face" id="heroChipFace" aria-hidden="true"></span>
+        <span class="hc-text"><b id="heroChipLvl">1 ур.</b><span class="hc-bar" aria-hidden="true"><i id="heroChipFill"></i></span></span>
+      </button>
       <div class="plabel"><p id="pSub"></p><h1 id="pTitle">Сегодня</h1></div>
       <div class="navs">
         <button class="navbtn" type="button" id="prevBtn" aria-label="Предыдущий день"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -587,7 +805,8 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
     </section>
     <div class="nudge" id="backupNudge" hidden></div>
 
-    <nav class="seg" role="tablist" aria-label="Горизонт планирования">
+    <nav class="seg has-ind" id="scopeSeg" style="--n: 3" role="tablist" aria-label="Горизонт планирования">
+      <span class="seg-ind" aria-hidden="true"></span>
       <button type="button" role="tab" class="scope" data-scope="day">День <span class="badge" hidden></span></button>
       <button type="button" role="tab" class="scope" data-scope="week">Неделя <span class="badge" hidden></span></button>
       <button type="button" role="tab" class="scope" data-scope="month">Месяц <span class="badge" hidden></span></button>
@@ -621,13 +840,23 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
       <h1 class="brand">Зал</h1>
       <p class="today" id="gymLine"></p>
     </header>
-    <nav class="seg small" role="tablist" aria-label="Раздел зала">
+    <nav class="seg small has-ind" id="gymSeg" style="--n: 4" role="tablist" aria-label="Раздел зала">
+      <span class="seg-ind" aria-hidden="true"></span>
       <button type="button" role="tab" class="gv" data-view="workout">Тренировка</button>
       <button type="button" role="tab" class="gv" data-view="program">Программа</button>
       <button type="button" role="tab" class="gv" data-view="progress">Прогресс</button>
       <button type="button" role="tab" class="gv" data-view="history">История</button>
     </nav>
     <div class="stack" id="gymBody"></div>
+  </section>
+
+  <!-- ======================= ГЕРОЙ ======================= -->
+  <section class="screen" id="screen-hero" hidden>
+    <header class="top">
+      <h1 class="brand">Герой</h1>
+      <p class="today">Растёт от твоих дел, тренировок и заметок</p>
+    </header>
+    <div class="stack" id="heroBody"></div>
   </section>
 
   <!-- ======================= КОПИЯ ======================= -->
@@ -682,6 +911,9 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
   <button type="button" role="tab" data-tab="gym">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4M6.5 7v10M17.5 7v10M21 10v4M6.5 12h11"/></svg>Зал
   </button>
+  <button type="button" role="tab" data-tab="hero">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="7"/><path d="M10 11v.5M14 11v.5M10.5 15c.9.6 2.1.6 3 0"/></svg>Герой
+  </button>
   <button type="button" role="tab" data-tab="backup">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></svg>Копия
   </button>
@@ -693,6 +925,7 @@ body.has-rest .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 
   <span class="rest-track" aria-hidden="true"><i id="restFill"></i></span>
 </div>
 
+<div class="lvlup" id="levelUp" hidden></div>
 <div class="overlay" id="overlay" hidden><div class="sheet-panel" id="sheetPanel" role="dialog" aria-modal="true"></div></div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <datalist id="exNames"></datalist>

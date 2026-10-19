@@ -243,13 +243,16 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sav
 window.addEventListener('pagehide', () => { if (saveTimer) flush(); });
 
 /* ================= состояние экрана ================= */
+const TABS = ['diary', 'gym', 'hero', 'backup'];
+/* «Уменьшение движения» в iPhone: тогда ничего не ждёт окончания анимаций */
+const REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 const ui = {
   tab: 'diary', scope: 'day', anchor: today(), todayKey: dayKey(today()),
   editing: null, gymView: 'workout', editDay: null, progressEx: null, progressMetric: 'w', openWorkout: null,
 };
 try {
   const s = JSON.parse(localStorage.getItem('dnevnik.ui') || '{}');
-  if (['diary', 'gym', 'backup'].includes(s.tab)) ui.tab = s.tab;
+  if (TABS.includes(s.tab)) ui.tab = s.tab;
   if (SCOPES.includes(s.scope)) ui.scope = s.scope;
   if (GYM_VIEWS.includes(s.gymView)) ui.gymView = s.gymView;
 } catch (e) { /* нет памяти */ }
@@ -259,20 +262,35 @@ function rememberUi() {
 }
 
 /* ================= всплывашки и нижние листы ================= */
-let toastTimer = null;
-function hideToast() { $('#toast').hidden = true; clearTimeout(toastTimer); }
+let toastTimer = null, toastOutTimer = null;
+/* перезапустить CSS-анимацию элемента: снять класс, дать браузеру заметить, вернуть */
+function replay(node, cls) { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); }
+function hideToast() {
+  const t = $('#toast');
+  clearTimeout(toastTimer); clearTimeout(toastOutTimer);
+  if (t.hidden) return;
+  if (REDUCED) { t.hidden = true; return; }
+  t.classList.add('out');
+  toastOutTimer = setTimeout(() => { t.hidden = true; t.classList.remove('out'); }, 200);
+}
 function toast(msg, undo) {
   const t = $('#toast');
+  clearTimeout(toastOutTimer);
+  t.classList.remove('out');
   t.replaceChildren(el('span', null, msg));
   if (undo) t.append(btn('toast-undo', 'Вернуть', () => { hideToast(); undo(); }));
   t.hidden = false;
+  replay(t, 'show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, undo ? 6500 : 4000);
 }
 
-let sheetOnClose = null;
+let sheetOnClose = null, sheetCloseTimer = null;
 function openSheet(title, build, closeLabel) {
   const ov = $('#overlay'), panel = $('#sheetPanel');
+  clearTimeout(sheetCloseTimer);
+  ov.classList.remove('closing');
+  replay(panel, 'up');
   panel.replaceChildren();
   if (title) panel.append(el('p', 'sheet-title', title));
   build(panel);
@@ -281,7 +299,13 @@ function openSheet(title, build, closeLabel) {
   ov.hidden = false;
 }
 function closeSheet() {
-  $('#overlay').hidden = true;
+  const ov = $('#overlay');
+  if (REDUCED) ov.hidden = true;
+  else {
+    ov.classList.add('closing');
+    clearTimeout(sheetCloseTimer);
+    sheetCloseTimer = setTimeout(() => { ov.hidden = true; ov.classList.remove('closing'); }, 200);
+  }
   const f = sheetOnClose; sheetOnClose = null;
   if (f) f();
 }
@@ -315,10 +339,12 @@ function sortTasks(list) {
 function setTask(id, value) {
   if (value) S.tasks[id] = value; else delete S.tasks[id];
   save(); rebuild(); renderDiary();
+  syncHeroLevel(false);
 }
 function addTask(text) {
-  const now = Date.now();
-  setTask(newId(), { text, scope: ui.scope, period: curKey(), done: false, important: false, createdAt: now, updatedAt: now, doneAt: null });
+  const now = Date.now(), id = newId();
+  ui.justAdded = id;
+  setTask(id, { text, scope: ui.scope, period: curKey(), done: false, important: false, createdAt: now, updatedAt: now, doneAt: null });
 }
 function patch(t, fields) {
   const cur = S.tasks[t.id];
@@ -360,11 +386,19 @@ function remove(t) {
   if (!saved) return;
   const r = t.repeatId && S.repeats[t.repeatId];
   if (r && !r.skip.includes(t.period)) r.skip.push(t.period);
-  setTask(t.id, null);
-  toast(r ? 'Удалено только на этот раз' : 'Дело удалено', () => {
-    if (r) r.skip = r.skip.filter((k) => k !== t.period);
-    setTask(t.id, Object.assign({}, saved, { updatedAt: Date.now() }));
-  });
+  const finish = () => {
+    setTask(t.id, null);
+    toast(r ? 'Удалено только на этот раз' : 'Дело удалено', () => {
+      if (r) r.skip = r.skip.filter((k) => k !== t.period);
+      ui.justAdded = t.id;
+      setTask(t.id, Object.assign({}, saved, { updatedAt: Date.now() }));
+    });
+  };
+  /* строка сначала уезжает и схлопывается, потом дело удаляется */
+  const rows = document.querySelectorAll('.task[data-id="' + CSS.escape(t.id) + '"]');
+  if (REDUCED || !rows.length) { finish(); return; }
+  rows.forEach((li) => { li.style.maxHeight = li.offsetHeight + 'px'; li.classList.add('leaving'); });
+  setTimeout(finish, 200);
 }
 
 function taskSheet(t) {
@@ -562,12 +596,12 @@ function stopRepeat(t) {
 }
 
 function taskEl(t, ctx) {
-  const li = el('li', 'task' + (t.done ? ' done' : '') + (t.important ? ' important' : ''));
+  const li = el('li', 'task' + (t.done ? ' done' : '') + (t.important ? ' important' : '') + (ui.justAdded === t.id ? ' enter' : '') + (ui.justToggled === t.id ? ' just' : ''));
   li.dataset.id = t.id;
   const mark = btn('mark', '!', () => patch(t, { important: !t.important }));
   mark.setAttribute('aria-label', 'Важное');
   mark.setAttribute('aria-pressed', String(t.important));
-  const check = btn('check', null, () => patch(t, { done: !t.done, doneAt: t.done ? null : Date.now() }));
+  const check = btn('check', null, () => { ui.justToggled = t.id; patch(t, { done: !t.done, doneAt: t.done ? null : Date.now() }); });
   check.setAttribute('role', 'checkbox');
   check.setAttribute('aria-checked', String(t.done));
   check.setAttribute('aria-label', t.text);
@@ -586,6 +620,11 @@ function taskEl(t, ctx) {
   side.append(more);
   side.prepend(mark);
   li.append(check, body, side);
+  if (ui.justToggled === t.id && t.done) {
+    const f = el('span', 'xp-float', '+' + taskXp(t) + ' опыта');
+    f.setAttribute('aria-hidden', 'true');
+    li.append(f);
+  }
   return li;
 }
 
@@ -654,6 +693,7 @@ function renderWeekStrip() {
 }
 function renderScopes() {
   const t = today();
+  $('#scopeSeg').style.setProperty('--i', SCOPES.indexOf(ui.scope));
   document.querySelectorAll('.scope').forEach((b) => {
     const s = b.dataset.scope, k = keyFor(s, t);
     b.setAttribute('aria-selected', String(s === ui.scope));
@@ -679,19 +719,23 @@ function renderPeriod() {
   $('#prevBtn').setAttribute('aria-label', labels[0]);
   $('#nextBtn').setAttribute('aria-label', labels[1]);
 }
-/* шапка карточки дел: название и сколько сделано */
+/* шапка карточки дел: название и сколько сделано; элементы живут постоянно,
+   чтобы полоска доезжала плавно, а не появлялась заново */
+let progEls = null;
 function renderProgress(items) {
-  const box = $('#progress');
+  if (!progEls) {
+    progEls = { title: el('h2'), meter: el('span', 'meter'), label: document.createTextNode(''), bar: el('span', 'bar'), fill: el('i') };
+    progEls.bar.append(progEls.fill);
+    progEls.bar.setAttribute('aria-hidden', 'true');
+    progEls.meter.append(progEls.label, progEls.bar);
+    $('#progress').replaceChildren(progEls.title, progEls.meter);
+  }
   const total = items.length, n = items.filter((t) => t.done).length;
-  const title = el('h2', null, { day: 'Дела', week: 'Планы недели', month: 'Планы месяца' }[ui.scope]);
-  if (!total) { box.replaceChildren(title); return; }
-  const meter = el('span', 'meter' + (n === total ? ' all' : ''));
-  const bar = el('span', 'bar');
-  const fill = el('i'); fill.style.width = Math.round(100 * n / total) + '%';
-  bar.append(fill);
-  bar.setAttribute('aria-hidden', 'true');
-  meter.append(document.createTextNode(n === total ? 'всё сделано' : n + ' из ' + total), bar);
-  box.replaceChildren(title, meter);
+  progEls.title.textContent = { day: 'Дела', week: 'Планы недели', month: 'Планы месяца' }[ui.scope];
+  progEls.meter.hidden = !total;
+  progEls.meter.classList.toggle('all', total > 0 && n === total);
+  progEls.label.textContent = n === total ? 'всё сделано' : n + ' из ' + total;
+  progEls.fill.style.width = total ? Math.round(100 * n / total) + '%' : '0%';
 }
 function renderTails() {
   const box = $('#tails'), scope = ui.scope, cur = keyFor(scope, today());
@@ -822,6 +866,7 @@ function renderDiaryList() {
     empty.textContent = 'Пока пусто. Впиши дело в строку ниже. Через «⋯» его можно перенести, сделать повторяющимся или отметить важным.';
   } else empty.hidden = true;
   renderTails(); renderUpper(); renderExtra();
+  ui.justToggled = null; ui.justAdded = null;
 }
 function rollover() {
   const k = dayKey(today());
@@ -833,7 +878,7 @@ function rollover() {
 function renderDiary() {
   rollover();
   ensureVisibleRepeats();
-  renderTop(); renderScopes(); renderPeriod(); renderWeekStrip(); renderDiaryList(); bindNote(); renderNudge();
+  renderTop(); renderScopes(); renderPeriod(); renderWeekStrip(); renderDiaryList(); bindNote(); renderNudge(); renderHeroChip();
 }
 function setScope(scope, date) {
   let d = date;
@@ -858,10 +903,12 @@ function flushNote() {
   const p = notePending; notePending = null;
   if (!p) return;
   const text = p.text.replace(/\s+$/, '');
+  const wasCounted = noteCounts(S.notes[p.id]);
   if (text.trim()) S.notes[p.id] = { scope: p.scope, period: p.period, text, updatedAt: Date.now() };
   else delete S.notes[p.id];
   save();
   $('#noteState').textContent = 'Сохранено';
+  if (!wasCounted && noteCounts(S.notes[p.id])) { toast('+' + XP.note + ' опыта · ясность'); renderHeroChip(); syncHeroLevel(false); }
 }
 function bindNote() {
   const ta = $('#noteInput');
@@ -1319,7 +1366,9 @@ function tickSet(i, j) {
   r.done = true;
   a.lastSetAt = Date.now();
   unlockAudio();
+  ui.justTicked = it.id + ':' + j;
   save(); renderGym();
+  ui.justTicked = null;
 }
 async function finishWorkout() {
   const a = S.gym.active;
@@ -1337,13 +1386,16 @@ async function finishWorkout() {
   const total = a.items.reduce((n, it) => n + it.rows.length, 0);
   const ticked = a.items.reduce((n, it) => n + it.rows.filter((r) => r.done).length, 0);
   if (ticked < total && !(await confirmSheet('Отмечено ' + ticked + ' из ' + total + ' ' + plural(total, ['подхода', 'подходов', 'подходов']) + '. Подходы без галочки не попадут в запись. Завершить?', 'Завершить'))) return;
+  const xpBefore = heroStats().total;
   S.gym.workouts[a.id] = { date: a.date, dayId: a.dayId, title: a.title, startedAt: a.startedAt, finishedAt: a.isEdit && a.finishedAt ? a.finishedAt : Date.now(), note: (a.note || '').trim(), items };
   S.gym.active = null;
   save();
-  toast((a.isEdit ? 'Изменения сохранены' : 'Тренировка сохранена') + ': ' + items.length + ' упр., ' + fmtInt(tonnage(items)) + ' кг');
+  const gain = heroStats().total - xpBefore;
+  toast((a.isEdit ? 'Изменения сохранены' : 'Тренировка сохранена') + ': ' + items.length + ' упр., ' + fmtInt(tonnage(items)) + ' кг' + (gain > 0 ? ', +' + gain + ' опыта' : ''));
   renderGym();
   window.scrollTo(0, 0);
   if (!a.isEdit && dayKey(new Date(S.meta.lastBackup || 0)) !== dayKey(today())) backupAfterWorkout();
+  syncHeroLevel(false, gain);
 }
 /* после тренировки — предложить копию, чтобы при потере телефона пропало не больше одной тренировки */
 function backupAfterWorkout() {
@@ -1482,11 +1534,20 @@ function itemCard(it, i, a) {
     rp.type = 'text'; rp.inputMode = 'numeric'; rp.value = r.r; rp.placeholder = ph.r || '—'; rp.id = 'r-' + it.id + '-' + j;
     rp.setAttribute('aria-label', it.name + ', подход ' + (j + 1) + ', повторы');
     data(rp, { a: 'set-r', i, j });
-    const tick = data(btn('tick'), { a: 'tick', i, j });
+    const just = r.done && ui.justTicked === it.id + ':' + j;
+    const tick = data(btn('tick' + (just ? ' pop' : '')), { a: 'tick', i, j });
     tick.innerHTML = TICK_SVG;
     tick.setAttribute('aria-pressed', String(!!r.done));
     tick.setAttribute('aria-label', r.done ? 'Снять отметку с подхода ' + (j + 1) : 'Отметить подход ' + (j + 1));
-    row.append(el('span', 'n', String(j + 1)), w, el('span', 'u', 'кг'), el('span', 'x', '×'), rp, el('span', 'u', 'повт'), tick);
+    /* только что отмеченный подход: волна от кружка и всплывающий опыт */
+    const tw = el('span', 'tickwrap');
+    tw.append(tick);
+    if (just) {
+      const rip = el('span', 'ripple'), fl = el('span', 'xp-float small', '+' + XP.set);
+      rip.setAttribute('aria-hidden', 'true'); fl.setAttribute('aria-hidden', 'true');
+      tw.append(rip, fl);
+    }
+    row.append(el('span', 'n', String(j + 1)), w, el('span', 'u', 'кг'), el('span', 'x', '×'), rp, el('span', 'u', 'повт'), tw);
     sets.append(row);
   });
   card.append(sets);
@@ -1889,6 +1950,7 @@ function historyView(box) {
 
 function renderGym() {
   document.querySelectorAll('.gv').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === ui.gymView)));
+  $('#gymSeg').style.setProperty('--i', GYM_VIEWS.indexOf(ui.gymView));
   const ws = finishedWorkouts();
   const a = S.gym.active;
   $('#gymLine').textContent = a ? (a.isEdit ? 'Правка тренировки' : 'Идёт тренировка') : ws.length ? 'Последняя: ' + shortDate(ws[0].date) : 'Тренировок пока нет';
@@ -2007,6 +2069,281 @@ $('#gymBody').addEventListener('click', async (e) => {
   }
 });
 
+/* ================= ГЕРОЙ ================= */
+/* Опыт каждый раз считается заново из записей, отдельно ничего не хранится:
+   дела, подходы, тренировки, рекорды и заметки. Случайных наград нет, опыт не сгорает,
+   пропущенные дни ничего не отнимают — герой просто отдыхает. */
+const XP = { task: 10, important: 20, set: 2, workout: 50, record: 30, note: 15 };
+const RANKS = ['Новичок', 'Ученик', 'Атлет', 'Мастер'];
+const STAGE_AT = [1, 5, 10, 20];
+const LOOKS = ['', 'повязка на голове', 'гантель в руке', 'плащ мастера'];
+const taskXp = (t) => (t.important ? XP.important : XP.task);
+const noteCounts = (n) => !!(n && typeof n.text === 'string' && n.text.trim().length >= 10);
+const stageOf = (level) => (level >= 20 ? 3 : level >= 10 ? 2 : level >= 5 ? 1 : 0);
+/* уровень: чтобы перейти с n на n+1, нужно n×step опыта */
+function levelOf(xp, step) {
+  let level = 1, need = step, rest = Math.max(0, xp);
+  while (rest >= need) { rest -= need; level++; need = level * step; }
+  return { level, into: rest, need };
+}
+function heroStats() {
+  let power = 0, discipline = 0, clarity = 0, last = 0;
+  const tk = dayKey(today()), todayEv = [];
+  Object.values(S.tasks).forEach((t) => {
+    if (!t || !t.done || typeof t.text !== 'string') return;
+    discipline += taskXp(t);
+    if (t.doneAt) {
+      last = Math.max(last, t.doneAt);
+      if (dayKey(new Date(t.doneAt)) === tk) todayEv.push({ xp: taskXp(t), text: t.text, stat: 'дисциплина', kind: 'd' });
+    }
+  });
+  /* рекорд — когда вес в упражнении больше, чем во всех прошлых тренировках */
+  const best = new Map();
+  finishedWorkouts().slice().reverse().forEach((w) => {
+    let sets = 0;
+    const recs = [];
+    w.items.forEach((it) => {
+      const ss = (it.sets || []).filter((s) => s.r > 0);
+      if (!ss.length) return;
+      sets += ss.length;
+      const k = normName(it.name), maxW = Math.max(...ss.map((s) => s.w || 0));
+      if (!(maxW > 0)) return;
+      const prev = best.get(k);
+      if (prev !== undefined && maxW > prev) recs.push(it.name + ' ' + fmtKg(maxW) + ' кг');
+      if (prev === undefined || maxW > prev) best.set(k, maxW);
+    });
+    if (!sets) return;
+    const gym = sets * XP.set + XP.workout;
+    power += gym + recs.length * XP.record;
+    last = Math.max(last, w.finishedAt || 0);
+    if (w.date === tk) {
+      todayEv.push({ xp: gym, text: 'Тренировка «' + (w.title || 'Тренировка') + '»', stat: 'сила', kind: 'p' });
+      recs.forEach((r) => todayEv.push({ xp: XP.record, text: 'Рекорд: ' + r, stat: 'сила', kind: 'p' }));
+    }
+  });
+  Object.keys(S.notes).forEach((id) => {
+    const n = S.notes[id];
+    if (!noteCounts(n)) return;
+    clarity += XP.note;
+    last = Math.max(last, n.updatedAt || 0);
+    if (id === 'day-' + tk) todayEv.push({ xp: XP.note, text: 'Заметка дня', stat: 'ясность', kind: 'c' });
+  });
+  const total = power + discipline + clarity;
+  return { power, discipline, clarity, total, last, today: todayEv, lv: levelOf(total, 100) };
+}
+
+/* Персонаж — svg из своих фигур; облик растёт: повязка (5), гантель (10), плащ (20) */
+function heroSvg(stage, o) {
+  const opt = o || {};
+  const fresh = (n) => (opt.fresh === n ? ' acc-new' : '');
+  const eyes = opt.sleepy
+    ? '<path class="h-ink" d="M55 92 Q64 99 73 92 M87 92 Q96 99 105 92" fill="none" stroke-width="3" stroke-linecap="round"/>'
+    : '<g class="hero-eyes"><ellipse class="h-white" cx="64" cy="90" rx="10" ry="11"/><ellipse class="h-white" cx="96" cy="90" rx="10" ry="11"/><circle class="h-pupil" cx="66" cy="92" r="5"/><circle class="h-pupil" cx="98" cy="92" r="5"/></g>';
+  return '<svg class="hero-svg' + (opt.breath ? ' hero-breath' : '') + '" viewBox="' + (opt.face ? '30 30 100 90' : '0 0 160 170') + '" aria-hidden="true" focusable="false">'
+    + (opt.face ? '' : '<ellipse class="h-shadow" cx="80" cy="161" rx="44" ry="7"/>')
+    + (stage >= 3 ? '<g class="h-acc' + fresh(3) + '"><path class="h-cape" d="M46 64 Q80 50 114 64 L138 150 Q80 164 22 150 Z"/></g>' : '')
+    + '<ellipse class="h-deep" cx="62" cy="151" rx="15" ry="9"/><ellipse class="h-deep" cx="98" cy="151" rx="15" ry="9"/>'
+    + '<rect class="h-deep" x="26" y="88" width="20" height="38" rx="10" transform="rotate(18 36 92)"/>'
+    + '<rect class="h-deep" x="114" y="88" width="20" height="38" rx="10" transform="rotate(-18 124 92)"/>'
+    + '<rect class="h-body" x="38" y="40" width="84" height="116" rx="42"/>'
+    + '<ellipse class="h-belly" cx="80" cy="120" rx="26" ry="24"/>'
+    + (stage >= 1 ? '<g class="h-acc' + fresh(1) + '"><rect class="h-band" x="44" y="60" width="72" height="12" rx="3"/><path class="h-band" d="M114 62 L134 54 L128 68 Z M114 69 L136 74 L124 82 Z"/></g>' : '')
+    + eyes
+    + '<circle class="h-cheek" cx="52" cy="106" r="6"/><circle class="h-cheek" cx="108" cy="106" r="6"/>'
+    + (opt.sleepy
+      ? '<path class="h-ink" d="M75 109 Q80 111 85 109" fill="none" stroke-width="3" stroke-linecap="round"/><text class="h-z" x="124" y="46">z</text><text class="h-z h-z2" x="136" y="30">z</text>'
+      : '<path class="h-ink" d="M72 106 Q80 113 88 106" fill="none" stroke-width="3" stroke-linecap="round"/>')
+    + (stage >= 2 ? '<g class="h-acc' + fresh(2) + '"><rect class="h-iron" x="124" y="118" width="27" height="5" rx="2"/><rect class="h-iron" x="119" y="109" width="8" height="23" rx="3"/><rect class="h-iron" x="148" y="109" width="8" height="23" rx="3"/></g>' : '')
+    + '</svg>';
+}
+const isSleepy = (st) => !!st.last && Date.now() - st.last > 3 * 864e5;
+
+/* значок уровня в шапке дневника: пульсирует, когда приходит опыт */
+let chipXp = null, chipFace = '';
+function renderHeroChip() {
+  const chip = $('#heroChip');
+  const st = heroStats(), lv = st.lv;
+  const face = heroSvg(stageOf(lv.level), { face: true, sleepy: isSleepy(st) });
+  if (face !== chipFace) { $('#heroChipFace').innerHTML = face; chipFace = face; }
+  $('#heroChipLvl').textContent = lv.level + ' ур.';
+  $('#heroChipFill').style.width = Math.round(100 * lv.into / lv.need) + '%';
+  chip.setAttribute('aria-label', 'Герой: ' + lv.level + ' уровень, ' + lv.into + ' из ' + lv.need + ' опыта. Открыть');
+  if (chipXp !== null && st.total > chipXp) replay(chip, 'pulse');
+  chipXp = st.total;
+}
+$('#heroChip').addEventListener('click', () => switchTab('hero'));
+
+/* новый уровень: экран с персонажем; при загрузке и восстановлении копии — молча */
+function syncHeroLevel(silent, gain) {
+  const L = heroStats().lv.level;
+  const seen = Number(S.meta.heroLevel) || 0;
+  if (L <= seen) return;
+  S.meta.heroLevel = L;
+  save();
+  if (!silent && seen) showLevelUp(seen, L, gain);
+}
+const RAYS = '<svg class="lu-rays" viewBox="0 0 240 240" aria-hidden="true">' + Array.from({ length: 12 }, (_, i) => '<rect x="117" y="6" width="6" height="58" rx="3" transform="rotate(' + i * 30 + ' 120 120)"/>').join('') + '</svg>';
+const STARS = '<svg class="lu-stars" viewBox="0 0 240 210" aria-hidden="true">'
+  + '<path class="lu-star" style="animation-delay:.9s" d="M40 50 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3 z"/>'
+  + '<path class="lu-star" style="animation-delay:1.5s" d="M200 40 l2.5 7 7 2.5 -7 2.5 -2.5 7 -2.5 -7 -7 -2.5 7 -2.5 z"/>'
+  + '<path class="lu-star" style="animation-delay:1.2s" d="M214 130 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3 z"/>'
+  + '<path class="lu-star" style="animation-delay:1.8s" d="M26 140 l2.5 7 7 2.5 -7 2.5 -2.5 7 -2.5 -7 -7 -2.5 7 -2.5 z"/></svg>';
+let luTimer = null;
+function showLevelUp(from, to, gain) {
+  const box = $('#levelUp');
+  const s0 = stageOf(from), s1 = stageOf(to), newLook = s1 > s0;
+  const next = STAGE_AT.find((n) => n > to);
+  clearTimeout(luTimer);
+  box.classList.remove('closing');
+  const card = el('div', 'lu-card');
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-modal', 'true');
+  card.setAttribute('aria-label', 'Новый уровень: ' + to);
+  const stage = el('div', 'lu-stage');
+  const ch = el('div', 'lu-char');
+  ch.innerHTML = heroSvg(s1, { fresh: newLook ? s1 : 0 });
+  stage.innerHTML = RAYS + STARS;
+  stage.append(ch);
+  const num = el('div', 'lu-num');
+  num.setAttribute('aria-hidden', 'true');
+  num.append(el('span', 'lu-old', String(from)), el('span', 'lu-new', String(to)));
+  const line = (tag, cls, text, delay) => { const n = el(tag, cls, text); n.style.animationDelay = delay; return n; };
+  card.append(stage, line('span', 'lu-line lu-kicker', 'Новый уровень', '.3s'), num,
+    line('h2', 'lu-line', newLook ? 'Ты теперь ' + RANKS[s1] : 'Уровень ' + to, '.75s'));
+  if (gain > 0) card.append(line('p', 'lu-line muted', '+' + gain + ' опыта за тренировку', '.85s'));
+  if (newLook) {
+    const u = line('div', 'lu-line lu-unlock', '', '1s');
+    u.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z"/></svg>';
+    u.append(document.createTextNode('Новый облик: ' + LOOKS[s1]));
+    card.append(u);
+  } else if (next) {
+    card.append(line('p', 'lu-line muted', 'До нового облика ' + (next - to) + ' ' + plural(next - to, ['уровень', 'уровня', 'уровней']), '.95s'));
+  }
+  const ok = line('button', 'primary lu-line lu-ok', 'Отлично', '1.1s');
+  ok.type = 'button';
+  ok.addEventListener('click', closeLevelUp);
+  card.append(ok);
+  box.replaceChildren(card);
+  box.hidden = false;
+  ok.focus({ preventScroll: true });
+  if (ui.tab === 'hero') renderHero();
+}
+function closeLevelUp() {
+  const box = $('#levelUp');
+  if (REDUCED) { box.hidden = true; return; }
+  box.classList.add('closing');
+  luTimer = setTimeout(() => { box.hidden = true; box.classList.remove('closing'); }, 220);
+}
+
+/* экран «Герой» */
+let heroJump = false, heroSay = -1;
+function renderHero() {
+  const st = heroStats(), lv = st.lv, stage = stageOf(lv.level), sleepy = isSleepy(st);
+  const next = STAGE_AT.find((n) => n > lv.level);
+  const todaySum = st.today.reduce((s, e) => s + e.xp, 0);
+  const phrases = [
+    sleepy ? 'Я отдыхаю. Вернёшься — продолжим' : todaySum ? 'Сегодня уже +' + todaySum + ' опыта' : 'Сегодня пока тихо — и это нормально',
+    'Отдых — тоже часть плана',
+    next ? 'До нового облика ' + (next - lv.level) + ' ' + plural(next - lv.level, ['уровень', 'уровня', 'уровней']) : 'Я Мастер!',
+    'Ещё раз? Мне весело',
+  ];
+  const box = $('#heroBody');
+  box.replaceChildren();
+
+  const card = el('section', 'card hero-card rise');
+  card.setAttribute('aria-label', 'Твой герой');
+  const stageBox = el('div', 'hero-stage');
+  const glow = el('div', 'hero-glow');
+  glow.setAttribute('aria-hidden', 'true');
+  const say = el('div', 'hero-say');
+  say.setAttribute('role', 'status');
+  say.hidden = true;
+  const jump = el('div', 'hero-jump');
+  jump.innerHTML = heroSvg(stage, { sleepy, breath: true });
+  const poke = btn('hero-btn', null, () => {
+    heroJump = !heroJump;
+    jump.classList.remove('jump-a', 'jump-b');
+    void jump.offsetWidth;
+    jump.classList.add(heroJump ? 'jump-a' : 'jump-b');
+    heroSay++;
+    say.textContent = phrases[heroSay % phrases.length];
+    say.hidden = false;
+    replay(say, 'show');
+  });
+  poke.setAttribute('aria-label', 'Погладить героя');
+  poke.append(jump);
+  stageBox.append(glow, say, poke);
+  const row = el('div', 'hero-row');
+  const left = el('div', 'hero-name');
+  left.append(el('span', 'muted', RANKS[stage]), el('h2', null, 'Уровень ' + lv.level));
+  const right = el('span', 'muted');
+  right.append(el('b', null, String(lv.into)), document.createTextNode(' / ' + lv.need + ' опыта'));
+  row.append(left, right);
+  const bar = el('span', 'xpbar');
+  bar.setAttribute('aria-hidden', 'true');
+  const fill = el('i', 'grow');
+  fill.style.width = Math.round(100 * lv.into / lv.need) + '%';
+  bar.append(fill);
+  const note = el('p', 'muted', sleepy
+    ? 'Герой отдыхает: несколько дней не было дел. Ничего не потеряно — отметь любое дело, и он проснётся.'
+    : next ? 'Ещё ' + (lv.need - lv.into) + ' опыта до ' + (lv.level + 1) + ' уровня. На ' + next + ' уровне появится ' + LOOKS[STAGE_AT.indexOf(next)] + '.' : 'Все облики открыты. Опыт продолжает копиться.');
+  card.append(stageBox, row, bar, note);
+
+  const stats = el('section', 'tiles rise');
+  stats.style.animationDelay = '60ms';
+  stats.setAttribute('aria-label', 'Характеристики');
+  [['Сила · зал', st.power, 'var(--ink)'], ['Дисциплина · дела', st.discipline, 'var(--done)'], ['Ясность · заметки', st.clarity, 'var(--margin)']].forEach(([label, xp, color]) => {
+    const l = levelOf(xp, 50);
+    const t = el('div', 'tile');
+    const sb = el('span', 'xpbar small');
+    sb.setAttribute('aria-hidden', 'true');
+    const f = el('i', 'grow');
+    f.style.width = Math.round(100 * l.into / l.need) + '%';
+    f.style.background = color;
+    sb.append(f);
+    t.append(el('span', null, label), el('b', null, l.level + ' ур.'), sb);
+    stats.append(t);
+  });
+
+  const td = el('section', 'card hero-list rise');
+  td.style.animationDelay = '120ms';
+  const th = el('div', 'row between');
+  th.append(el('h2', null, 'Сегодня'));
+  if (todaySum) th.append(el('b', 'gain', '+' + todaySum + ' опыта'));
+  td.append(th);
+  if (!st.today.length) td.append(el('p', 'muted', 'Пока без опыта. Отметь дело, сделай подход или напиши заметку дня.'));
+  st.today.slice().reverse().forEach((e) => {
+    const r = el('div', 'hero-ev');
+    const t = el('span');
+    t.append(document.createTextNode(e.text + ' '), el('span', 'muted', '· ' + e.stat));
+    r.append(el('b', 'ev-' + e.kind, '+' + e.xp), t);
+    td.append(r);
+  });
+
+  const path = el('section', 'card rise');
+  path.style.animationDelay = '180ms';
+  path.append(el('h2', null, 'Путь героя'));
+  const pg = el('div', 'hero-path');
+  STAGE_AT.forEach((at, i) => {
+    const p = el('div', 'hero-step' + (i === stage ? ' cur' : '') + (lv.level < at ? ' locked' : ''));
+    const pic = el('div', 'hero-mini');
+    pic.innerHTML = heroSvg(i);
+    p.append(pic, el('b', null, RANKS[i]), el('span', null, at + ' ур.'));
+    pg.append(p);
+  });
+  path.append(pg);
+
+  const rules = el('section', 'card rise');
+  rules.style.animationDelay = '240ms';
+  rules.append(el('h2', null, 'Как растёт опыт'));
+  const rl = el('div', 'hero-rules');
+  [['Дело сделано', XP.task], ['Важное дело сделано', XP.important], ['Подход отмечен', XP.set], ['Тренировка завершена', XP.workout], ['Новый рекорд в упражнении', XP.record], ['Заметка написана', XP.note]]
+    .forEach(([l, n]) => rl.append(el('span', null, l), el('b', null, '+' + n)));
+  rules.append(rl, el('p', 'hero-fine', 'Опыт не сгорает и не выпадает случайно: только за то, что сделано. Пропустил день — герой просто отдыхает.'));
+
+  box.append(card, stats, td, path, rules);
+}
+
 /* ================= КОПИЯ ================= */
 function renderBackup() {
   const ws = Object.keys(S.gym.workouts).length;
@@ -2075,7 +2412,7 @@ async function importText(text) {
       };
     });
     fixImported();
-    save(); renderAll();
+    save(); syncHeroLevel(true); renderAll();
     toast('Добавлено: ' + parts.join(', '));
     return;
   }
@@ -2091,14 +2428,14 @@ async function importText(text) {
       if (typeof photos[id] === 'string' && photos[id].startsWith('data:image/')) { try { await storePhoto(photos[id], id); } catch (e) { /* без этого фото */ } }
     }
     rebuildCatalog();
-    save(); rebuild(); renderAll();
+    save(); rebuild(); syncHeroLevel(true); renderAll();
     toast('Копия восстановлена: ' + Object.keys(S.tasks).length + ' дел, ' + Object.keys(S.gym.workouts).length + ' тренировок');
     return;
   }
   let added = 0, notes = 0;
   Object.keys(obj(j.tasks)).forEach((id) => { const t = j.tasks[id]; if (!S.tasks[id] && validTask(t)) { S.tasks[id] = t; added++; } });
   Object.keys(obj(j.notes)).forEach((id) => { const n = j.notes[id]; if (!S.notes[id] && n && typeof n.text === 'string') { S.notes[id] = n; notes++; } });
-  save(); rebuild(); renderAll();
+  save(); rebuild(); syncHeroLevel(true); renderAll();
   toast(added || notes ? 'Перенесено с компьютера: ' + added + ' дел, ' + notes + ' заметок' : 'Новых записей в файле нет: всё уже здесь');
 }
 $('#exportBtn').addEventListener('click', exportBackup);
@@ -2114,16 +2451,19 @@ $('#importTextBtn').addEventListener('click', () => { const v = $('#importText')
 /* ================= вкладки и запуск ================= */
 function switchTab(tab) {
   if (ui.editing) document.activeElement && document.activeElement.blur();
+  const changed = ui.tab !== tab;
   ui.tab = tab;
   rememberUi();
   renderAll();
+  if (changed) replay($('#screen-' + tab), 'enter');
   window.scrollTo(0, 0);
 }
 function renderAll() {
-  ['diary', 'gym', 'backup'].forEach((t) => { $('#screen-' + t).hidden = t !== ui.tab; });
+  TABS.forEach((t) => { $('#screen-' + t).hidden = t !== ui.tab; });
   document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === ui.tab)));
   if (ui.tab === 'diary') renderDiary();
   else if (ui.tab === 'gym') renderGym();
+  else if (ui.tab === 'hero') renderHero();
   else renderBackup();
   updateTimers();
 }
@@ -2156,6 +2496,7 @@ load().then(() => {
   rebuildCatalog();
   fixImported();
   rebuild();
+  syncHeroLevel(true);
   renderInstallHint();
   renderAll();
   scheduleMidnight();
